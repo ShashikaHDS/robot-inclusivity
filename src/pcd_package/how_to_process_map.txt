@@ -1,0 +1,23 @@
+## Current workflow
+# Offline pre-processing:
+python3 preclean_pcd.py \
+  --in  /home/teal/Downloads/lio_ws/src/pcd_package/preclean/map_in/GlobalMap.pcd \
+  --out /home/teal/Downloads/lio_ws/src/pcd_package/preclean/map_out/Filtered_GlobalMap.pcd \
+  --min_z 0.05 --max_z 0.80 --voxel 0.05 \
+  --sor_k 50 --sor_std 1.2 --ror_radius 0.15 --ror_min 5
+
+# Direct 2D map generation without OctoMap:
+python3 /home/teal/Downloads/lio_ws/src/pcd_package/pcd_package/pcd_to_occupancy_map.py \
+  --in /home/teal/Downloads/lio_ws/src/pcd_package/preclean/map_out/Filtered_GlobalMap.pcd \
+  --out-prefix /home/teal/Downloads/lio_ws/src/pcd_package/final_2d_represntation/map \
+  --resolution 0.05 \
+  --padding 0.50 \
+  --min_z 0.05 \
+  --max_z 1.00
+
+# Optional ROS publishing path if you still want a PointCloud2 topic:
+ros2 run pcd_package pcd_publisher_1 --ros-args \
+  -p pcd_path:=/home/teal/Downloads/lio_ws/src/pcd_package/preclean/map_out/Filtered_GlobalMap.pcd \
+  -p frame_id:=map \
+  -p topic:=/cloud_fixed \
+  -p publish_rate_hz:=0.0

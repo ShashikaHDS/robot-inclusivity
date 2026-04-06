@@ -1,0 +1,32 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd"
+            schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>pcd_package</name>
+  <version>0.1.0</version>
+  <description>Publish a static PCD file as sensor_msgs/PointCloud2.</description>
+
+  <maintainer email="aryan@todo.todo">aryan</maintainer>
+  <license>MIT</license>
+
+  <!-- Build system -->
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <!-- Runtime deps (Python node + messages + helper) -->
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>sensor_msgs_py</exec_depend>
+  <exec_depend>builtin_interfaces</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+
+  <!-- Linters/tests (optional) -->
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

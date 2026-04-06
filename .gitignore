@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.nbc
+*.nbi
+*.egg-info/
+dist/
+build/
+
+# PyInstaller
+*.spec
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Map data (large binary files)
+*.pcd
+*.ply
+*.pgm
+map/
+
+# Temporary
+*.tmp
+*.bak
+
+# Images
+view.png
+
+# RViz
+*.rviz
+
+# Claude memory
+.claude/

@@ -1,0 +1,876 @@
+"""Custom GUI widgets — MapW, DragScrollArea, PointCloudPreviewW, PointCloudW."""
+
+import os
+import math
+import numpy as np
+from PyQt5.QtWidgets import QWidget, QScrollArea
+from PyQt5.QtCore import Qt, QRect, QRectF, QPointF, pyqtSignal
+from PyQt5.QtGui import (
+    QPixmap, QImage, QPainter, QPainterPath, QPen, QColor, QBrush, QPolygonF, QFont,
+)
+
+from core.semantic_selection import (
+    selection_bounds_px,
+    selection_to_screen_path,
+)
+
+try:
+    import pyqtgraph as pg
+    import pyqtgraph.opengl as pgl
+    from pyqtgraph import Vector
+    PYQTGRAPH_GL_AVAILABLE = True
+except Exception:
+    pg = None
+    pgl = None
+    Vector = None
+    PYQTGRAPH_GL_AVAILABLE = False
+
+
+class MapW(QWidget):
+    sel_changed = pyqtSignal(object)
+    hover_coords = pyqtSignal(int, int, float, float)  # pixel_x, pixel_y, world_x, world_y
+    start_picked = pyqtSignal(int, int, float, float)  # pixel_x, pixel_y, world_x, world_y
+    def __init__(s):
+        super().__init__()
+        s.setMinimumSize(200, 200)
+        s.setMouseTracking(True)
+        s._map_resolution = 0.05
+        s._map_origin = (0.0, 0.0)
+        s._map_hw = (0, 0)
+        s._pick_start_mode = False
+        s._start_point = None  # (px, py) in image coords
+        s.setFocusPolicy(Qt.StrongFocus)
+        s._bp = None
+        s._sm = False
+        s._drag_mode = None
+        s._ds = s._de = None
+        s._poly = []
+        s._last_pos = None
+        s.sel = None
+        s._selection_mode = "rectangle"
+        s._zoom = 1.0
+        s._pan = np.array([0.0, 0.0], dtype=np.float32)
+        s._focus_rect = None
+        s._focus_label = ""
+        s._edit_active = False
+        s._edit_mode = "draw"
+        s._brush_shape = "circle"
+        s._brush_size = 10
+        s._brush_rect_w = 10
+        s._brush_rect_h = 10
+        s._edit_overlay = None
+        s._edit_strokes = []
+        s._ref_overlay = None
+        s._ref_overlay_visible = False
+        s._update_cursor()
+    def set_qi(s, qi):
+        old_size = s._bp.size() if s._bp is not None else None
+        s._bp = QPixmap.fromImage(qi)
+        if old_size is None or old_size != s._bp.size():
+            s.reset_view()
+        else:
+            s.update()
+    def set_selection_mode(s, mode):
+        s._selection_mode = "freeform" if mode == "freeform" else "rectangle"
+        s.update()
+    def enable_sel(s, mode=None):
+        if mode is not None:
+            s.set_selection_mode(mode)
+        s._sm = True
+        s._poly = []
+        s._update_cursor()
+    def clear_sel(s):
+        s.sel = None
+        s._ds = s._de = None
+        s._poly = []
+        s.update()
+    def clear_focus(s):
+        s._focus_rect = None
+        s._focus_label = ""
+        s.update()
+    def reset_view(s):
+        s._zoom = 1.0
+        s._pan[:] = 0.0
+        s.update()
+    def focus_rect(s, rect, label=""):
+        if not rect or not s._bp or s._bp.isNull():
+            return
+        x1, y1, x2, y2 = rect
+        x1 = max(0.0, min(float(x1), s._bp.width() - 1.0))
+        x2 = max(0.0, min(float(x2), s._bp.width() - 1.0))
+        y1 = max(0.0, min(float(y1), s._bp.height() - 1.0))
+        y2 = max(0.0, min(float(y2), s._bp.height() - 1.0))
+        if x2 < x1:
+            x1, x2 = x2, x1
+        if y2 < y1:
+            y1, y2 = y2, y1
+        bw = max(6.0, x2 - x1 + 1.0)
+        bh = max(6.0, y2 - y1 + 1.0)
+        fit = min(s.width() / max(1, s._bp.width()), s.height() / max(1, s._bp.height()))
+        fit = max(fit, 1e-6)
+        target_scale = min(s.width() / (bw * 2.8), s.height() / (bh * 2.8))
+        s._zoom = max(0.4, min(20.0, target_scale / fit))
+        scale = fit * s._zoom
+        cx = (x1 + x2) * 0.5
+        cy = (y1 + y2) * 0.5
+        ox = (s.width() - s._bp.width() * scale) * 0.5
+        oy = (s.height() - s._bp.height() * scale) * 0.5
+        s._pan[0] = (s.width() * 0.5) - (ox + cx * scale)
+        s._pan[1] = (s.height() * 0.5) - (oy + cy * scale)
+        s._focus_rect = (x1, y1, x2, y2)
+        s._focus_label = label
+        s.update()
+    def enable_edit(s, overlay_array=None):
+        if overlay_array is not None:
+            s._edit_overlay = np.asarray(overlay_array, dtype=np.uint8).copy()
+        elif s._bp and not s._bp.isNull():
+            h, w = s._bp.height(), s._bp.width()
+            s._edit_overlay = np.full((h, w), 127, dtype=np.uint8)
+        s._edit_active = True
+        s._update_cursor()
+    def disable_edit(s):
+        s._edit_active = False
+        s._update_cursor()
+        s.update()
+    def get_edit_overlay(s):
+        return s._edit_overlay
+    def set_edit_mode(s, mode):
+        s._edit_mode = mode
+    def set_brush_shape(s, shape):
+        s._brush_shape = shape
+    def set_brush_size(s, size):
+        s._brush_size = max(1, int(size))
+    def set_brush_rect_size(s, half_w, half_h):
+        s._brush_rect_w = max(1, int(half_w))
+        s._brush_rect_h = max(1, int(half_h))
+    def set_reference_overlay(s, qi):
+        s._ref_overlay = qi
+        s.update()
+    def set_reference_overlay_visible(s, visible):
+        s._ref_overlay_visible = bool(visible)
+        s.update()
+    def _paint_brush(s, ix, iy):
+        if s._edit_overlay is None:
+            return
+        h, w = s._edit_overlay.shape
+        r = s._brush_size
+        val = 0 if s._edit_mode == "draw" else 254
+        if s._brush_shape == "circle":
+            yy, xx = np.ogrid[-r:r+1, -r:r+1]
+            mask = xx*xx + yy*yy <= r*r
+            y0, x0 = iy - r, ix - r
+            for dy in range(mask.shape[0]):
+                for dx in range(mask.shape[1]):
+                    py, px = y0 + dy, x0 + dx
+                    if mask[dy, dx] and 0 <= py < h and 0 <= px < w:
+                        s._edit_overlay[py, px] = val
+        elif s._brush_shape == "rectangle":
+            rw = s._brush_rect_w
+            rh = s._brush_rect_h
+            y0 = max(0, iy - rh); y1 = min(h, iy + rh + 1)
+            x0 = max(0, ix - rw); x1 = min(w, ix + rw + 1)
+            s._edit_overlay[y0:y1, x0:x1] = val
+        else:
+            if 0 <= iy < h and 0 <= ix < w:
+                s._edit_overlay[iy, ix] = val
+        s.update()
+    def _update_cursor(s):
+        if s._edit_active:
+            s.setCursor(Qt.CrossCursor)
+        elif s._sm:
+            s.setCursor(Qt.CrossCursor)
+        elif s._bp:
+            s.setCursor(Qt.OpenHandCursor)
+        else:
+            s.setCursor(Qt.ArrowCursor)
+    def _metrics(s):
+        if not s._bp or s._bp.isNull():
+            return None
+        fit = min(s.width() / max(1, s._bp.width()), s.height() / max(1, s._bp.height()))
+        fit = max(fit, 1e-6)
+        scale = fit * s._zoom
+        sw = s._bp.width() * scale
+        sh = s._bp.height() * scale
+        ox = (s.width() - sw) * 0.5 + float(s._pan[0])
+        oy = (s.height() - sh) * 0.5 + float(s._pan[1])
+        return scale, ox, oy, sw, sh
+    def _image_xy_float(s, pos, clamp=False):
+        m = s._metrics()
+        if not m:
+            return None
+        scale, ox, oy, _, _ = m
+        x = (pos.x() - ox) / scale
+        y = (pos.y() - oy) / scale
+        if clamp:
+            x = max(0.0, min(x, s._bp.width() - 1))
+            y = max(0.0, min(y, s._bp.height() - 1))
+        elif not (0.0 <= x < s._bp.width() and 0.0 <= y < s._bp.height()):
+            return None
+        return x, y
+    def _ic(s, pos, clamp=False):
+        xy = s._image_xy_float(pos, clamp=clamp)
+        if xy is None:
+            return None
+        return (
+            int(round(xy[0])),
+            int(round(xy[1])),
+        )
+    def enable_start_pick(s):
+        s._pick_start_mode = True
+        s.setCursor(Qt.CrossCursor)
+
+    def mousePressEvent(s, e):
+        if not s._bp:
+            return
+        # Start point picking mode
+        if s._pick_start_mode and e.button() == Qt.LeftButton:
+            pt = s._ic(e.pos(), clamp=True)
+            if pt is not None:
+                px, py = pt
+                s._start_point = (px, py)
+                s._pick_start_mode = False
+                s.setCursor(Qt.ArrowCursor)
+                h, w_map = s._map_hw
+                if h > 0:
+                    world_x = s._map_origin[0] + px * s._map_resolution
+                    world_y = s._map_origin[1] + (h - 1 - py) * s._map_resolution
+                    s.start_picked.emit(px, py, world_x, world_y)
+                s.update()
+            return
+        if s._edit_active and e.button() == Qt.LeftButton:
+            pt = s._ic(e.pos(), clamp=True)
+            if pt:
+                s._drag_mode = "edit"
+                s._paint_brush(pt[0], pt[1])
+            return
+        if s._sm and e.button() == Qt.LeftButton:
+            pt = s._ic(e.pos(), clamp=False)
+            if pt is None:
+                return
+            s._drag_mode = "select"
+            if s._selection_mode == "freeform":
+                s._poly = [pt]
+                s._ds = s._de = None
+            else:
+                s._ds = pt
+                s._de = pt
+            return
+        if e.button() in (Qt.LeftButton, Qt.MiddleButton, Qt.RightButton):
+            s._drag_mode = "pan"
+            s._last_pos = e.pos()
+            s.setCursor(Qt.ClosedHandCursor)
+    def set_map_metadata(s, resolution, origin, height, width):
+        s._map_resolution = resolution
+        s._map_origin = (origin[0], origin[1])
+        s._map_hw = (height, width)
+
+    def mouseMoveEvent(s, e):
+        # Emit world coordinates on hover
+        pt = s._ic(e.pos())
+        if pt is not None and s._map_hw[0] > 0:
+            px, py = pt
+            h, w = s._map_hw
+            world_x = s._map_origin[0] + px * s._map_resolution
+            world_y = s._map_origin[1] + (h - 1 - py) * s._map_resolution
+            s.hover_coords.emit(px, py, world_x, world_y)
+
+        if s._drag_mode == "edit":
+            pt2 = s._ic(e.pos(), clamp=True)
+            if pt2:
+                s._paint_brush(pt2[0], pt2[1])
+            return
+        if s._drag_mode == "select":
+            if s._selection_mode == "freeform":
+                pt2 = s._ic(e.pos(), clamp=True)
+                if pt2 is not None and (not s._poly or max(abs(pt2[0] - s._poly[-1][0]), abs(pt2[1] - s._poly[-1][1])) >= 2):
+                    s._poly.append(pt2)
+            else:
+                s._de = s._ic(e.pos(), clamp=True)
+            s.update()
+            return
+        if s._drag_mode == "pan" and s._last_pos is not None:
+            delta = e.pos() - s._last_pos
+            s._pan[0] += delta.x()
+            s._pan[1] += delta.y()
+            s._last_pos = e.pos()
+            s.update()
+    def mouseReleaseEvent(s, e):
+        if s._drag_mode == "edit":
+            s._drag_mode = None
+            return
+        if s._drag_mode == "select":
+            if s._selection_mode == "freeform":
+                pt = s._ic(e.pos(), clamp=True)
+                if pt is not None and (not s._poly or pt != s._poly[-1]):
+                    s._poly.append(pt)
+                if len(s._poly) >= 3:
+                    bounds = selection_bounds_px({"kind": "freeform", "points": s._poly})
+                    if bounds is not None:
+                        x1, y1, x2, y2 = bounds
+                        if x2 - x1 > 5 and y2 - y1 > 5:
+                            s.sel = {"kind": "freeform", "points": list(s._poly)}
+                            s.sel_changed.emit(s.sel)
+                s._poly = []
+            else:
+                s._de = s._ic(e.pos(), clamp=True)
+                if s._ds and s._de:
+                    x1 = min(s._ds[0], s._de[0]); y1 = min(s._ds[1], s._de[1])
+                    x2 = max(s._ds[0], s._de[0]); y2 = max(s._ds[1], s._de[1])
+                    if x2 - x1 > 5 and y2 - y1 > 5:
+                        s.sel = {"kind": "rect", "rect": (x1, y1, x2, y2)}
+                        s.sel_changed.emit(s.sel)
+            s._sm = False
+            s._drag_mode = None
+            s._update_cursor()
+            s.update()
+            return
+        if s._drag_mode == "pan":
+            s._drag_mode = None
+            s._last_pos = None
+            s._update_cursor()
+            s.update()
+    def paintEvent(s, e):
+        p = QPainter(s)
+        p.fillRect(s.rect(), QColor("#f0f0f0"))
+        if not s._bp or s._bp.isNull():
+            p.setPen(QColor("#6b7280"))
+            p.drawText(s.rect(), Qt.AlignCenter, "No image")
+            p.end()
+            return
+        p.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        m = s._metrics()
+        if not m:
+            p.end()
+            return
+        scale, ox, oy, sw, sh = m
+        target = QRect(int(round(ox)), int(round(oy)), int(round(sw)), int(round(sh)))
+        p.drawPixmap(target, s._bp)
+        if s._edit_active and s._ref_overlay is not None and s._ref_overlay_visible:
+            p.setOpacity(0.35)
+            p.drawImage(target, s._ref_overlay)
+            p.setOpacity(1.0)
+        if s._edit_active and s._edit_overlay is not None:
+            oh, ow = s._edit_overlay.shape
+            ov = s._edit_overlay
+            rgba = np.zeros((oh, ow, 4), dtype=np.uint8)
+            draw_mask = ov >= 200
+            erase_mask = ov < 50
+            rgba[draw_mask] = [0, 200, 100, 100]
+            rgba[erase_mask] = [255, 60, 40, 100]
+            qi = QImage(rgba.data, ow, oh, 4 * ow, QImage.Format_RGBA8888)
+            qi._np_ref = rgba
+            p.drawImage(target, qi)
+        preview = None
+        closed = True
+        if s._drag_mode == "select":
+            if s._selection_mode == "freeform" and len(s._poly) >= 2:
+                preview = {"kind": "freeform", "points": list(s._poly)}
+                closed = False
+            elif s._ds and s._de:
+                preview = {
+                    "kind": "rect",
+                    "rect": (
+                        min(s._ds[0], s._de[0]),
+                        min(s._ds[1], s._de[1]),
+                        max(s._ds[0], s._de[0]),
+                        max(s._ds[1], s._de[1]),
+                    ),
+                }
+        elif s.sel:
+            preview = s.sel
+        if preview:
+            sel_path = selection_to_screen_path(preview, scale, ox, oy, close_path=closed)
+            if closed:
+                target_path = QPainterPath()
+                target_path.addRect(QRectF(target))
+                p.fillPath(target_path.subtracted(sel_path), QColor(0, 0, 0, 80))
+                p.save()
+                p.setClipPath(sel_path)
+                p.drawPixmap(target, s._bp)
+                p.restore()
+                p.setPen(QPen(QColor(37, 99, 235), 2, Qt.DashLine))
+                p.drawPath(sel_path)
+            else:
+                p.setPen(QPen(QColor(37, 99, 235), 2))
+                p.drawPath(sel_path)
+        if s._focus_rect is not None:
+            x1, y1, x2, y2 = s._focus_rect
+            focus_rect = QRectF(
+                ox + x1 * scale,
+                oy + y1 * scale,
+                max(3.0, (x2 - x1 + 1.0) * scale),
+                max(3.0, (y2 - y1 + 1.0) * scale),
+            )
+            p.setPen(QPen(QColor(37, 99, 235), 2))
+            p.setBrush(QColor(37, 99, 235, 28))
+            p.drawRect(focus_rect)
+            if s._focus_label:
+                tag_rect = QRectF(focus_rect.left(), max(target.top() + 8, focus_rect.top() - 24), 260, 20)
+                p.fillRect(tag_rect, QColor(255, 255, 255, 220))
+                p.setPen(QColor(37, 99, 235))
+                p.drawText(tag_rect.adjusted(6, 0, -6, 0), Qt.AlignVCenter | Qt.AlignLeft, s._focus_label)
+        # Draw start point marker
+        if s._start_point is not None:
+            sx = ox + s._start_point[0] * scale
+            sy = oy + s._start_point[1] * scale
+            r = max(4.0, 6.0 * scale)
+            p.setPen(QPen(QColor(220, 40, 40), 2))
+            p.setBrush(QColor(220, 40, 40, 100))
+            p.drawEllipse(QPointF(sx, sy), r, r)
+            p.setPen(QPen(QColor(220, 40, 40), 2))
+            p.drawLine(QPointF(sx - r - 2, sy), QPointF(sx + r + 2, sy))
+            p.drawLine(QPointF(sx, sy - r - 2), QPointF(sx, sy + r + 2))
+        if s._pick_start_mode:
+            p.setPen(QColor(220, 40, 40))
+            p.setFont(p.font())
+            p.drawText(max(12, target.left() + 12), max(18, target.top() + 18), "Click to set robot start point")
+
+        p.setPen(QColor("#1f2937"))
+        overlay = []
+        if s._zoom != 1.0:
+            overlay.append(f"zoom: {s._zoom:.2f}x")
+        if s._sm:
+            if s._selection_mode == "freeform":
+                overlay.append("wheel: zoom | drag: pan | double-click: reset | draw a freeform loop to select")
+            else:
+                overlay.append("wheel: zoom | drag: pan | double-click: reset | drag a rectangle to select")
+        else:
+            overlay.append("wheel: zoom | drag: pan | double-click: reset | select via Step 3 button")
+        y = max(18, target.top() + 18)
+        for line in overlay:
+            p.drawText(max(12, target.left() + 12), y, line)
+            y += 16
+        p.end()
+    def resizeEvent(s, e):
+        super().resizeEvent(e)
+        s.update()
+    def mouseDoubleClickEvent(s, e):
+        s.reset_view()
+    def wheelEvent(s, e):
+        if not s._bp:
+            return
+        anchor = s._image_xy_float(e.pos(), clamp=False)
+        old_zoom = s._zoom
+        factor = 1.15 if e.angleDelta().y() > 0 else (1 / 1.15)
+        s._zoom = max(0.2, min(20.0, s._zoom * factor))
+        if anchor is not None and abs(s._zoom - old_zoom) > 1e-9:
+            fit = min(s.width() / max(1, s._bp.width()), s.height() / max(1, s._bp.height()))
+            scale = max(fit, 1e-6) * s._zoom
+            s._pan[0] = e.pos().x() - ((s.width() - s._bp.width() * scale) * 0.5) - anchor[0] * scale
+            s._pan[1] = e.pos().y() - ((s.height() - s._bp.height() * scale) * 0.5) - anchor[1] * scale
+        s.update()
+        e.accept()
+
+
+class DragScrollArea(QScrollArea):
+    def __init__(s):
+        super().__init__()
+        s._dragging = False
+        s._last_pos = None
+        s.setWidgetResizable(True)
+        s.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        s.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        s.viewport().setCursor(Qt.OpenHandCursor)
+
+    def mousePressEvent(s, e):
+        if e.button() == Qt.LeftButton:
+            s._dragging = True
+            s._last_pos = e.pos()
+            s.viewport().setCursor(Qt.ClosedHandCursor)
+            e.accept()
+            return
+        super().mousePressEvent(e)
+
+    def mouseMoveEvent(s, e):
+        if s._dragging and s._last_pos is not None:
+            delta = e.pos() - s._last_pos
+            s.verticalScrollBar().setValue(s.verticalScrollBar().value() - delta.y())
+            s._last_pos = e.pos()
+            e.accept()
+            return
+        super().mouseMoveEvent(e)
+
+    def mouseReleaseEvent(s, e):
+        if e.button() == Qt.LeftButton and s._dragging:
+            s._dragging = False
+            s._last_pos = None
+            s.viewport().setCursor(Qt.OpenHandCursor)
+            e.accept()
+            return
+        super().mouseReleaseEvent(e)
+
+    def setWidget(s, widget):
+        super().setWidget(widget)
+        if widget is not None:
+            widget.setMinimumWidth(s.viewport().width())
+        s.horizontalScrollBar().setValue(0)
+
+    def resizeEvent(s, e):
+        super().resizeEvent(e)
+        widget = s.widget()
+        if widget is not None:
+            widget.setMinimumWidth(s.viewport().width())
+        s.horizontalScrollBar().setValue(0)
+
+
+class PointCloudPreviewW(QWidget):
+    def __init__(s):
+        super().__init__()
+        s.setMinimumSize(200, 200)
+        s.setMouseTracking(True)
+        s.setFocusPolicy(Qt.StrongFocus)
+        s._msg = "No point cloud"
+        s._img = None
+        s._points = None
+        s._z_vals = None
+        s._path = ""
+        s._label = ""
+        s._total_points = 0
+        s._display_points = 0
+        s._sampled = False
+        s._yaw = -45.0
+        s._pitch = 28.0
+        s._zoom = 1.0
+        s._pan = np.array([0.0, 0.0], dtype=np.float32)
+        s._drag_btn = None
+        s._last_pos = None
+
+    def clear_cloud(s, message="No point cloud"):
+        s._msg = message
+        s._img = None
+        s._points = None
+        s._z_vals = None
+        s.update()
+
+    def set_cloud(s, cloud):
+        pts = np.asarray(cloud["points"], dtype=np.float32)
+        if pts.size == 0:
+            s.clear_cloud("Point cloud is empty")
+            return
+        mins = pts.min(axis=0)
+        maxs = pts.max(axis=0)
+        center = (mins + maxs) * 0.5
+        s._points = np.ascontiguousarray(pts - center, dtype=np.float32)
+        s._z_vals = pts[:, 2].astype(np.float32, copy=False)
+        s._colors = np.asarray(cloud["colors"], dtype=np.uint8) if "colors" in cloud and cloud["colors"] is not None else None
+        s._path = cloud.get("path", "")
+        s._label = cloud.get("label", "Point Cloud")
+        s._total_points = int(cloud.get("total_points", pts.shape[0]))
+        s._display_points = int(cloud.get("display_points", pts.shape[0]))
+        s._sampled = bool(cloud.get("sampled", False))
+        s.reset_view(render=False)
+        s._msg = ""
+        s._render()
+
+    def reset_view(s, render=True):
+        s._yaw = -45.0
+        s._pitch = 28.0
+        s._zoom = 1.0
+        s._pan[:] = 0.0
+        if render:
+            s._render()
+
+    def _render(s):
+        if s._points is None or s.width() <= 2 or s.height() <= 2:
+            s._img = None
+            s.update()
+            return
+
+        pts = s._points
+        w = max(2, s.width())
+        h = max(2, s.height())
+
+        yaw = math.radians(s._yaw)
+        pitch = math.radians(s._pitch)
+        cz, sz = math.cos(yaw), math.sin(yaw)
+        cx, sx = math.cos(pitch), math.sin(pitch)
+
+        x1 = pts[:, 0] * cz - pts[:, 1] * sz
+        y1 = pts[:, 0] * sz + pts[:, 1] * cz
+        z1 = pts[:, 2]
+        y2 = y1 * cx - z1 * sx
+        z2 = y1 * sx + z1 * cx
+
+        span_x = max(float(np.ptp(x1)), 1e-3)
+        span_z = max(float(np.ptp(z2)), 1e-3)
+        scale = 0.9 * min(w / span_x, h / span_z) * s._zoom
+
+        xs = np.rint(x1 * scale + (w * 0.5) + s._pan[0]).astype(np.int32)
+        ys = np.rint(-z2 * scale + (h * 0.5) + s._pan[1]).astype(np.int32)
+        inside = (xs >= 0) & (xs < w) & (ys >= 0) & (ys < h)
+        if not np.any(inside):
+            s._img = None
+            s.update()
+            return
+
+        xs = xs[inside]
+        ys = ys[inside]
+        depth = y2[inside]
+        z_vals = s._z_vals[inside]
+
+        if s._colors is not None and s._colors.shape[0] == s._points.shape[0]:
+            colors = s._colors[inside]
+        else:
+            z_lo, z_hi = np.percentile(z_vals, [5, 95])
+            if z_hi <= z_lo:
+                z_hi = z_lo + 1.0
+            t = np.clip((z_vals - z_lo) / (z_hi - z_lo), 0.0, 1.0)
+            shade = (175 + 70 * (1.0 - t)).astype(np.uint8)
+            colors = np.column_stack((shade, shade, shade))
+
+        order = np.argsort(depth)
+        xs = xs[order]
+        ys = ys[order]
+        colors = colors[order]
+
+        img = np.zeros((h, w, 3), dtype=np.uint8)
+        img[:] = [6, 10, 16]
+        img[ys, xs] = colors
+        if xs.shape[0] < 120_000:
+            img[np.clip(ys + 1, 0, h - 1), xs] = colors
+            img[ys, np.clip(xs + 1, 0, w - 1)] = colors
+
+        s._img = QImage(img.tobytes(), w, h, 3 * w, QImage.Format_RGB888).copy()
+        s.update()
+
+    def paintEvent(s, e):
+        p = QPainter(s)
+        p.fillRect(s.rect(), QColor("#f0f0f0"))
+        if s._img is not None:
+            p.drawImage(0, 0, s._img)
+        else:
+            p.setPen(QColor("#6b7280"))
+            p.drawText(s.rect(), Qt.AlignCenter, s._msg or "No point cloud")
+
+        if s._points is not None:
+            p.setPen(QColor("#1f2937"))
+            overlay = [
+                s._label,
+                f"file: {os.path.basename(s._path)}",
+                f"points: {s._display_points:,}/{s._total_points:,}" + (" sampled" if s._sampled else ""),
+                "left-drag: rotate | right-drag: pan | wheel: zoom | double-click: reset",
+            ]
+            y = 22
+            for line in overlay:
+                p.drawText(12, y, line)
+                y += 16
+
+    def resizeEvent(s, e):
+        super().resizeEvent(e)
+        s._render()
+
+    def mousePressEvent(s, e):
+        s._drag_btn = e.button()
+        s._last_pos = e.pos()
+        s.setCursor(Qt.ClosedHandCursor)
+
+    def mouseMoveEvent(s, e):
+        if s._points is None or s._last_pos is None:
+            return
+        dx = e.x() - s._last_pos.x()
+        dy = e.y() - s._last_pos.y()
+        if s._drag_btn == Qt.LeftButton:
+            s._yaw += dx * 0.5
+            s._pitch = max(-89.0, min(89.0, s._pitch + dy * 0.35))
+        elif s._drag_btn == Qt.RightButton:
+            s._pan[0] += dx
+            s._pan[1] += dy
+        s._last_pos = e.pos()
+        s._render()
+
+    def mouseReleaseEvent(s, e):
+        s._drag_btn = None
+        s._last_pos = None
+        s.setCursor(Qt.ArrowCursor)
+
+    def mouseDoubleClickEvent(s, e):
+        s.reset_view()
+
+    def wheelEvent(s, e):
+        if s._points is None:
+            return
+        delta = e.angleDelta().y()
+        factor = 1.1 if delta > 0 else 1 / 1.1
+        s._zoom = max(0.1, min(20.0, s._zoom * factor))
+        s._render()
+
+
+if PYQTGRAPH_GL_AVAILABLE:
+    class PointCloudW(pgl.GLViewWidget):
+        gl_failed = pyqtSignal(str)
+
+        def __init__(s):
+            super().__init__()
+            s.setBackgroundColor((6, 10, 16))
+            s.setMinimumSize(200, 200)
+            s._msg = "No point cloud"
+            s._path = ""
+            s._label = ""
+            s._total_points = 0
+            s._display_points = 0
+            s._sampled = False
+            s._radius = 1.0
+            s._count = 0
+            s._last_pos = None
+            s._scatter = pgl.GLScatterPlotItem(
+                pos=np.zeros((0, 3), dtype=np.float32),
+                color=np.zeros((0, 4), dtype=np.float32),
+                size=2.0,
+                pxMode=True,
+            )
+            s._scatter.setGLOptions("translucent")
+            s.addItem(s._scatter)
+            s._legend = []
+            s.reset_view()
+
+        def clear_cloud(s, message="No point cloud"):
+            s._msg = message
+            s._count = 0
+            s._legend = []
+            try:
+                s._scatter.setData(
+                    pos=np.zeros((0, 3), dtype=np.float32),
+                    color=np.zeros((0, 4), dtype=np.float32),
+                    size=1.0,
+                    pxMode=True,
+                )
+            except Exception:
+                pass
+            s.update()
+
+        def set_cloud(s, cloud):
+            try:
+                pts = np.asarray(cloud["points"], dtype=np.float32)
+                if pts.size == 0:
+                    s.clear_cloud("Point cloud is empty")
+                    return
+
+                mins = pts.min(axis=0)
+                maxs = pts.max(axis=0)
+                center = (mins + maxs) * 0.5
+                centered = np.ascontiguousarray(pts - center, dtype=np.float32)
+                s._radius = float(0.5 * np.linalg.norm(maxs - mins))
+                if s._radius <= 1e-6:
+                    s._radius = 1.0
+
+                if "colors" in cloud and cloud["colors"] is not None:
+                    rgb = np.asarray(cloud["colors"], dtype=np.float32)
+                    if rgb.max() > 1.0:
+                        rgb = rgb / 255.0
+                    n = rgb.shape[0]
+                    colors = np.column_stack((
+                        rgb[:, 0], rgb[:, 1], rgb[:, 2],
+                        np.full(n, 0.96, dtype=np.float32),
+                    )).astype(np.float32)
+                else:
+                    z_vals = pts[:, 2].astype(np.float32, copy=False)
+                    z_lo, z_hi = np.percentile(z_vals, [5, 95])
+                    if z_hi <= z_lo:
+                        z_hi = z_lo + 1.0
+                    t = np.clip((z_vals - z_lo) / (z_hi - z_lo), 0.0, 1.0).astype(np.float32)
+                    shade = (0.72 + 0.23 * (1.0 - t)).astype(np.float32)
+                    colors = np.column_stack((
+                        shade,
+                        shade,
+                        shade,
+                        np.full_like(t, 0.96),
+                    )).astype(np.float32)
+
+                point_px = max(1.4, min(2.8, 2400.0 / max(centered.shape[0], 1) ** 0.33))
+                s._scatter.setData(pos=centered, color=colors, size=float(point_px), pxMode=True)
+                s._path = cloud.get("path", "")
+                s._label = cloud.get("label", "Point Cloud")
+                s._total_points = int(cloud.get("total_points", pts.shape[0]))
+                s._display_points = int(cloud.get("display_points", pts.shape[0]))
+                s._sampled = bool(cloud.get("sampled", False))
+                s._count = centered.shape[0]
+                s._center_offset = center.copy()
+                s._msg = ""
+                # Store legend entries for 2D overlay
+                s._legend = cloud.get("legend", [])
+                s.reset_view()
+            except Exception as e:
+                s.gl_failed.emit(f"pyqtgraph.opengl failed: {e}")
+
+        def reset_view(s):
+            s.opts["center"] = Vector(0.0, 0.0, 0.0)
+            s.setCameraPosition(distance=max(2.2 * s._radius, 1.0), elevation=28.0, azimuth=-45.0)
+            s.update()
+
+        def paintEvent(s, e):
+            try:
+                super().paintEvent(e)
+            except Exception as exc:
+                s.gl_failed.emit(f"pyqtgraph paint failed: {exc}")
+                return
+            p = QPainter(s)
+            p.setRenderHint(QPainter.TextAntialiasing)
+            if s._count == 0:
+                p.setPen(QColor("#6b7280"))
+                p.drawText(s.rect(), Qt.AlignCenter, s._msg or "No point cloud")
+            else:
+                p.setPen(QColor("#1f2937"))
+                overlay = [
+                    s._label,
+                    f"file: {os.path.basename(s._path)}",
+                    f"points: {s._display_points:,}/{s._total_points:,}" + (" sampled" if s._sampled else ""),
+                    "pyqtgraph.opengl | left-drag: rotate | right-drag: pan | wheel: zoom | double-click: reset",
+                ]
+                y = 22
+                for line in overlay:
+                    p.drawText(12, y, line)
+                    y += 16
+                # Draw legend in bottom-right
+                if s._legend:
+                    font = QFont("monospace", 8)
+                    p.setFont(font)
+                    row_h = 16
+                    swatch = 10
+                    pad = 8
+                    n = len(s._legend)
+                    max_text_w = max(p.fontMetrics().horizontalAdvance(txt) for txt, _ in s._legend)
+                    box_w = swatch + 6 + max_text_w + pad * 2
+                    box_h = n * row_h + pad * 2
+                    bx = s.width() - box_w - 12
+                    by = s.height() - box_h - 12
+                    p.setPen(Qt.NoPen)
+                    p.setBrush(QColor(10, 14, 20, 180))
+                    p.drawRoundedRect(bx, by, box_w, box_h, 6, 6)
+                    ly = by + pad
+                    for txt, clr in s._legend:
+                        p.setPen(Qt.NoPen)
+                        p.setBrush(QColor(*clr) if isinstance(clr, (tuple, list)) else QColor(clr))
+                        p.drawRect(bx + pad, ly + 2, swatch, swatch)
+                        p.setPen(QColor("#1f2937"))
+                        p.drawText(bx + pad + swatch + 6, ly + row_h - 4, txt)
+                        ly += row_h
+            p.end()
+
+        def mousePressEvent(s, e):
+            s._last_pos = e.pos()
+            super().mousePressEvent(e)
+
+        def mouseMoveEvent(s, e):
+            if s._last_pos is not None and (e.buttons() & Qt.RightButton) and not (e.buttons() & Qt.LeftButton):
+                dx = e.x() - s._last_pos.x()
+                dy = e.y() - s._last_pos.y()
+                pan_scale = max(s.opts.get("distance", 1.0), 1.0) * 0.002
+                try:
+                    s.pan(-dx * pan_scale, dy * pan_scale, 0, relative="view")
+                except TypeError:
+                    s.pan(-dx * pan_scale, dy * pan_scale, 0)
+                s._last_pos = e.pos()
+                s.update()
+                return
+            s._last_pos = e.pos()
+            super().mouseMoveEvent(e)
+
+        def mouseReleaseEvent(s, e):
+            s._last_pos = None
+            super().mouseReleaseEvent(e)
+
+        def mouseDoubleClickEvent(s, e):
+            s.reset_view()
+            e.accept()
+else:
+    PointCloudW = PointCloudPreviewW
