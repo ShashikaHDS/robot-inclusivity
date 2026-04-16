@@ -294,3 +294,56 @@ class MapBuildW(QThread):
     def cancel(s):
         s._c = True
         s._killall()
+
+
+class GroundAnalysisW(QThread):
+    """Worker thread for RANSAC ground segmentation + transition detection."""
+    log = pyqtSignal(str, str)
+    done = pyqtSignal(bool, str)
+    result_ready = pyqtSignal(object)  # emits GroundAnalysisResult
+    prog = pyqtSignal(int)
+
+    def __init__(s, pcd_path, max_slope_deg=35.0, max_step_m=0.25):
+        super().__init__()
+        s.pcd_path = pcd_path
+        s.max_slope_deg = max_slope_deg
+        s.max_step_m = max_step_m
+        s._c = False
+
+    def run(s):
+        try:
+            from core.ground_analysis import run_ground_analysis, generate_accessibility_report
+
+            s.log.emit("[Ground] Loading point cloud...", "info")
+            s.prog.emit(10)
+            points = load_xyz_points(s.pcd_path)
+            if s._c:
+                s.done.emit(False, "Cancelled"); return
+            s.log.emit(f"[Ground] Loaded {points.shape[0]:,} points", "info")
+            s.prog.emit(30)
+
+            def log_fn(msg, lvl="info"):
+                s.log.emit(msg, lvl)
+
+            result = run_ground_analysis(
+                points,
+                max_slope_deg=s.max_slope_deg,
+                max_step_m=s.max_step_m,
+                log=log_fn,
+            )
+            if s._c:
+                s.done.emit(False, "Cancelled"); return
+            s.prog.emit(90)
+
+            report = generate_accessibility_report(result)
+            s.log.emit(report, "info")
+            s.prog.emit(100)
+
+            s.result_ready.emit(result)
+            s.done.emit(True, "OK")
+        except Exception as e:
+            s.log.emit(f"[Ground] Error: {e}", "warn")
+            s.done.emit(False, str(e))
+
+    def cancel(s):
+        s._c = True

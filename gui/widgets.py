@@ -84,6 +84,8 @@ class MapW(QWidget):
         s._edit_strokes = []
         s._ref_overlay = None
         s._ref_overlay_visible = False
+        s._transition_overlay = None   # QImage for ramp/step overlay
+        s._transition_labels = []      # list of (screen_x, screen_y, text, color)
         s._update_cursor()
     def set_qi(s, qi):
         old_size = s._bp.size() if s._bp is not None else None
@@ -165,6 +167,17 @@ class MapW(QWidget):
     def set_brush_rect_size(s, half_w, half_h):
         s._brush_rect_w = max(1, int(half_w))
         s._brush_rect_h = max(1, int(half_h))
+    def set_transition_overlay(s, qi, labels=None):
+        """Set a semi-transparent RGBA QImage overlay showing ramp/step regions."""
+        s._transition_overlay = qi
+        s._transition_labels = labels or []
+        s.update()
+
+    def clear_transition_overlay(s):
+        s._transition_overlay = None
+        s._transition_labels = []
+        s.update()
+
     def set_reference_overlay(s, qi):
         s._ref_overlay = qi
         s.update()
@@ -367,6 +380,24 @@ class MapW(QWidget):
         scale, ox, oy, sw, sh = m
         target = QRect(int(round(ox)), int(round(oy)), int(round(sw)), int(round(sh)))
         p.drawPixmap(target, s._bp)
+        # ── Transition overlay (ramps/steps) ──
+        if s._transition_overlay is not None:
+            p.setOpacity(0.55)
+            p.drawImage(target, s._transition_overlay)
+            p.setOpacity(1.0)
+            # Draw labels
+            if s._transition_labels:
+                font = QFont("monospace", 9)
+                font.setBold(True)
+                p.setFont(font)
+                for lx, ly, text, clr in s._transition_labels:
+                    sx = ox + lx * scale
+                    sy = oy + ly * scale
+                    p.setPen(QColor(0, 0, 0, 180))
+                    p.drawText(int(sx) + 1, int(sy) + 1, text)
+                    p.setPen(QColor(*clr) if isinstance(clr, (tuple, list)) else QColor(clr))
+                    p.drawText(int(sx), int(sy), text)
+
         if s._edit_active and s._ref_overlay is not None and s._ref_overlay_visible:
             p.setOpacity(0.35)
             p.drawImage(target, s._ref_overlay)

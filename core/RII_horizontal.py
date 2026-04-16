@@ -820,6 +820,7 @@ def run_coverage(
     floor_pgm_path=None,
     use_stc=False,
     planner=None,
+    ground_analysis_result=None,
 ):
     """Horizontal RII area computation."""
     L = logf if logf else lambda m, c="": None
@@ -892,6 +893,33 @@ def run_coverage(
     if trav_mask is not None:
         if floor_mask is not None:
             floor_mask[trav_mask == 1] = 1
+
+    # ── Ground analysis: block non-traversable ramps/steps on the obstacle map ──
+    if ground_analysis_result is not None:
+        t0 = time.time()
+        n_blocked_cells = 0
+        analysis_origin = ground_analysis_result.grid_origin
+        analysis_cell = ground_analysis_result.cell_size
+        for t in ground_analysis_result.transitions:
+            if t.traversable:
+                continue
+            for ci in range(t.cells.shape[0]):
+                row_a, col_a = int(t.cells[ci, 0]), int(t.cells[ci, 1])
+                wx = analysis_origin[0] + (col_a + 0.5) * analysis_cell
+                wy = analysis_origin[1] + (row_a + 0.5) * analysis_cell
+                px = int((wx - ox) / res)
+                py = int((wy - oy) / res)
+                # blocked array is flipped (row 0 = bottom of map)
+                if 0 <= px < w and 0 <= py < h:
+                    idx = py * w + px
+                    if blocked[idx] == 0:
+                        blocked[idx] = 1
+                        n_blocked_cells += 1
+        n_blocked_transitions = sum(
+            1 for t in ground_analysis_result.transitions if not t.traversable
+        )
+        L(f"[{label}] Ground analysis: {n_blocked_transitions} non-traversable "
+          f"transition(s), {n_blocked_cells} cells blocked ({time.time()-t0:.3f}s)", "info")
 
     if sel_mask is not None:
         t0 = time.time()

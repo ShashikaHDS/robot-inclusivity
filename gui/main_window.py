@@ -85,7 +85,7 @@ from core.RII_vertical import (
     compute_rii_vertical, compute_combined_rii,
     identify_wall_segments, colorize_cloud_with_walls,
 )
-from gui.workers import ShellW, ViewW, MapBuildW
+from gui.workers import ShellW, ViewW, MapBuildW, GroundAnalysisW
 from gui.widgets import (
     MapW, DragScrollArea,
     PointCloudPreviewW, PointCloudW,
@@ -1104,6 +1104,15 @@ class MainWin(QMainWindow):
         s.b4.clicked.connect(s._step4); l4.addWidget(s.b4)
         s.b4save = QPushButton("Save Map (.pgm + .yaml) As..."); s.b4save.setStyleSheet(s._B_secondary())
         s.b4save.clicked.connect(s._save_map_bundle); l4.addWidget(s.b4save)
+        s.b_ground = QPushButton("Detect Ramps && Steps (RANSAC)"); s.b_ground.setStyleSheet(s._B("#059669"))
+        s.b_ground.setToolTip(
+            "Run RANSAC ground segmentation to detect ramps and steps.\n"
+            "Results are overlaid on the obstacle map:\n"
+            "  Green = robot can pass (within slope/step limits)\n"
+            "  Red = robot cannot pass (exceeds limits)\n"
+            "Labels show measured angle (ramps) or height (steps)."
+        )
+        s.b_ground.clicked.connect(s._run_ground_analysis); l4.addWidget(s.b_ground)
         l4.addWidget(QLabel("The floor is auto-detected. Obstacle max height is relative to the detected floor level."))
         l4.addWidget(QLabel("Outputs are cached in a temporary session folder unless you explicitly save them."))
         g4.setLayout(l4); ll.addWidget(g4)
@@ -2000,6 +2009,108 @@ class MainWin(QMainWindow):
                 if os.path.isfile(pgm): s._load_map(pgm)
         w.done.connect(done); s._wk.append(w); w.start()
 
+    # ── Ground Analysis (RANSAC ramp/step detection) ──
+    def _run_ground_analysis(s):
+        p = s.e_in.text().strip()
+        if not os.path.isfile(p):
+            QMessageBox.warning(s, "Error", f"Point cloud not found:\n{p}")
+            return
+        s.b_ground.setEnabled(False)
+        s.prog.setValue(0)
+        s._log("Starting RANSAC ground analysis...", "info")
+
+        w = GroundAnalysisW(p, s.t_slope.value(), s.t_step.value())
+        w.log.connect(s._log)
+        w.prog.connect(s.prog.setValue)
+        w.result_ready.connect(s._on_ground_result)
+
+        def done(ok, msg):
+            s.b_ground.setEnabled(True)
+            if ok:
+                s._log("Ground analysis complete.", "success")
+            else:
+                s._log(f"Ground analysis failed: {msg}", "warn")
+
+        w.done.connect(done)
+        s._wk.append(w)
+        w.start()
+
+    def _on_ground_result(s, result):
+        """Handle GroundAnalysisResult from the worker — build overlay image."""
+        s._ground_result = result
+
+        # Build RGBA overlay for the obstacle map
+        pgm = s.e_pgm.text()
+        if not pgm or not os.path.isfile(pgm):
+            s._log("[Ground] No obstacle map loaded — overlay skipped. Generate a 2D map first.", "warn")
+            return
+
+        map_w, map_h, _ = parse_pgm(pgm)
+        yaml_path = pgm.replace(".pgm", ".yaml")
+        if not os.path.isfile(yaml_path):
+            s._log("[Ground] Map YAML not found — overlay skipped.", "warn")
+            return
+        yd = parse_yaml(yaml_path)
+        map_res = float(yd["resolution"])
+        map_ox = float(yd["origin"][0])
+        map_oy = float(yd["origin"][1])
+
+        # Create RGBA overlay
+        rgba = np.zeros((map_h, map_w, 4), dtype=np.uint8)
+        labels = []
+        analysis_origin = result.grid_origin
+        analysis_cell = result.cell_size
+
+        for t in result.transitions:
+            if t.cells.shape[0] == 0:
+                continue
+            # Pick color based on traversability
+            if t.traversable:
+                color = (0, 200, 80, 160)   # green
+            else:
+                color = (220, 40, 40, 160)   # red
+
+            # Draw transition cells onto the overlay
+            for ci in range(t.cells.shape[0]):
+                row_a, col_a = int(t.cells[ci, 0]), int(t.cells[ci, 1])
+                wx = analysis_origin[0] + (col_a + 0.5) * analysis_cell
+                wy = analysis_origin[1] + (row_a + 0.5) * analysis_cell
+                px = int((wx - map_ox) / map_res)
+                # PGM is stored flipped: py measured from bottom
+                py = map_h - 1 - int((wy - map_oy) / map_res)
+                if 0 <= px < map_w and 0 <= py < map_h:
+                    rgba[py, px] = color
+                    # Fill a small area for visibility
+                    for dr in range(-1, 2):
+                        for dc in range(-1, 2):
+                            nr, nc = py + dr, px + dc
+                            if 0 <= nr < map_h and 0 <= nc < map_w:
+                                rgba[nr, nc] = color
+
+            # Label at the center of the transition
+            cx = analysis_origin[0] + float(np.mean(t.cells[:, 1])) * analysis_cell
+            cy = analysis_origin[1] + float(np.mean(t.cells[:, 0])) * analysis_cell
+            lpx = (cx - map_ox) / map_res
+            lpy = map_h - 1 - (cy - map_oy) / map_res
+            if t.type == "ramp":
+                text = f"{t.angle_deg:.1f}°"
+            else:
+                text = f"step {t.step_height_m:.2f}m"
+            label_color = (0, 220, 80) if t.traversable else (255, 60, 60)
+            labels.append((lpx, lpy, text, label_color))
+
+        qi = QImage(rgba.data, map_w, map_h, 4 * map_w, QImage.Format_RGBA8888)
+        qi._np_ref = rgba  # prevent GC
+        s.mw.set_transition_overlay(qi.copy(), labels)
+
+        # Switch to obstacle map view to show overlay
+        s._switch_view(PRIMARY_SELECTION_VIEW)
+
+        pass_count = sum(1 for t in result.transitions if t.traversable)
+        total = len(result.transitions)
+        s._log(f"[Ground] Overlay: {pass_count}/{total} transitions passable "
+               f"(green=pass, red=blocked)", "success")
+
     # ── Traversability Map Editing ──
     def _toggle_edit_mode(s, mode):
         """Activate draw/erase editing on the traversable ground map."""
@@ -2146,6 +2257,7 @@ class MainWin(QMainWindow):
                     trav_sidecar,
                     floor_sidecar,
                     planner=planner,
+                    ground_analysis_result=getattr(s, '_ground_result', None),
                 )
                 s.ref_result_sig.emit(r, pgm)
             except Exception as e:
@@ -2216,6 +2328,7 @@ class MainWin(QMainWindow):
                     trav_sidecar,
                     floor_sidecar,
                     planner=planner,
+                    ground_analysis_result=getattr(s, '_ground_result', None),
                 )
                 s.act_result_sig.emit(r, pgm)
             except Exception as e:
