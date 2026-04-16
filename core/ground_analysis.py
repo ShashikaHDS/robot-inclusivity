@@ -359,24 +359,29 @@ def detect_ramps_by_slope(
         width_m = max(float(np.ptp(centered @ perp)), cell_size)
 
         # Filter by size
+        area = len(comp) * cell_size * cell_size
         if length_m < min_length_m or width_m < min_width_m:
             continue
-        area = len(comp) * cell_size * cell_size
         if area < min_area_m2:
             continue
 
         # Filter by gradient direction consistency
-        # Real ramps have consistent slope direction (score > 0.6)
+        # Real ramps have consistent slope direction.
+        # Large ramps (>5m²) naturally have more gradient variation, so use a lower threshold.
         consistency = _gradient_direction_consistency(dzdx, dzdy, rows, cols)
-        if consistency < 0.6:
+        consistency_threshold = 0.4 if area > 5.0 else 0.6
+        if consistency < consistency_threshold:
             continue
 
         # Filter by minimum height difference — real ramps have significant rise
         if z_range < 0.15:
             continue
 
-        # Ramp angle from height range over length
-        angle_deg = float(np.degrees(np.arctan2(z_range, length_m)))
+        # Ramp angle: use median per-cell slope (more robust than height_range/length
+        # which gets diluted for large components that include flat areas)
+        cell_slopes = slope_deg[rows, cols]
+        valid_slopes = cell_slopes[~np.isnan(cell_slopes)]
+        angle_deg = float(np.median(valid_slopes)) if valid_slopes.size > 0 else 0.0
 
         # Start/end points (low → high)
         min_idx = int(np.argmin(proj))
