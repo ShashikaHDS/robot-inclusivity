@@ -217,10 +217,10 @@ def _gradient_direction_consistency(
 def detect_ramps_by_slope(
     points: np.ndarray,
     cell_size: float = 0.20,
-    min_ramp_slope_deg: float = 4.0,
-    min_area_m2: float = 2.0,
+    min_ramp_slope_deg: float = 5.0,
+    min_area_m2: float = 1.0,
     min_length_m: float = 1.0,
-    min_width_m: float = 0.8,
+    min_width_m: float = 0.5,
     ground_percentile: float = 10.0,
     z_band: float = 1.0,
     log: callable = None,
@@ -366,9 +366,13 @@ def detect_ramps_by_slope(
             continue
 
         # Filter by gradient direction consistency
-        # Real ramps have consistent slope direction (score > 0.5)
+        # Real ramps have consistent slope direction (score > 0.6)
         consistency = _gradient_direction_consistency(dzdx, dzdy, rows, cols)
-        if consistency < 0.5:
+        if consistency < 0.6:
+            continue
+
+        # Filter by minimum height difference — real ramps have significant rise
+        if z_range < 0.15:
             continue
 
         # Ramp angle from height range over length
@@ -487,7 +491,7 @@ def run_ground_analysis(
     max_slope_deg: float = 35.0,
     max_step_m: float = 0.25,
     cell_size: float = 0.20,
-    min_ramp_slope_deg: float = 4.0,
+    min_ramp_slope_deg: float = 5.0,
     log: callable = None,
     **kwargs,
 ) -> GroundAnalysisResult:
