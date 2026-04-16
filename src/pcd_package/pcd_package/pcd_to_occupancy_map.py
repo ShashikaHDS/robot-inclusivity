@@ -99,7 +99,6 @@ def main() -> None:
     parser.add_argument("--ground-percentile", type=float, default=10.0, help="Low-percentile height used as local ground estimate")
     parser.add_argument("--max-slope-deg", type=float, default=35.0, help="Maximum terrain slope for traversability")
     parser.add_argument("--max-step-m", type=float, default=0.25, help="Maximum step height between neighboring cells")
-    parser.add_argument("--max-roughness-m", type=float, default=0.15, help="Maximum 3x3 local height roughness")
     parser.add_argument("--reachable-only", action="store_true", help="Keep only the largest connected traversable region")
     parser.add_argument("--absolute-z", action="store_true", help="Treat --min_z/--max_z as absolute world z values (skip floor-relative heuristic)")
     parser.add_argument("--align-pgm", default=None, help="Optional reference PGM to align traversability output dimensions")
@@ -145,7 +144,6 @@ def main() -> None:
             ground_percentile=args.ground_percentile,
             max_slope_deg=args.max_slope_deg,
             max_step_m=args.max_step_m,
-            max_roughness_m=args.max_roughness_m,
             origin_xy=origin_xy,
             shape=shape,
             z_mode=z_mode,

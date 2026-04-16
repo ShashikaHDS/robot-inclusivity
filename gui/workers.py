@@ -112,7 +112,7 @@ class ViewW(QThread):
 
 class MapBuildW(QThread):
     log = pyqtSignal(str, str); done = pyqtSignal(bool, str); prog = pyqtSignal(int)
-    def __init__(s, pcd, sd, mz, xz, max_slope_deg=35.0, max_step_m=0.25, max_roughness_m=0.15, wait_seconds=12):
+    def __init__(s, pcd, sd, mz, xz, max_slope_deg=35.0, max_step_m=0.25, wait_seconds=12):
         super().__init__()
         s.pcd = pcd
         s.sd = sd
@@ -120,7 +120,6 @@ class MapBuildW(QThread):
         s.xz = xz
         s.max_slope_deg = max_slope_deg
         s.max_step_m = max_step_m
-        s.max_roughness_m = max_roughness_m
         s.wait_seconds = wait_seconds
         s._ps = []
         s._c = False
@@ -218,7 +217,6 @@ class MapBuildW(QThread):
                 "--max_z", str(terrain_xz),
                 "--max-slope-deg", str(s.max_slope_deg),
                 "--max-step-m", str(s.max_step_m),
-                "--max-roughness-m", str(s.max_roughness_m),
             ]
             if terrain_z_absolute:
                 trav_cmd.append("--absolute-z")
@@ -233,7 +231,6 @@ class MapBuildW(QThread):
                 "--max_z", str(terrain_xz),
                 "--max-slope-deg", str(s.max_slope_deg),
                 "--max-step-m", str(s.max_step_m),
-                "--max-roughness-m", str(s.max_roughness_m),
             ]
             if terrain_z_absolute:
                 floor_cmd.append("--absolute-z")

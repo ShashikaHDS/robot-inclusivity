@@ -906,7 +906,7 @@ def run_coverage(
 
     # ── Build the driveable map from traversability (primary) + obstacles (fallback) ──
     # The traversability map already encodes where the robot can physically drive
-    # (slope, step height, roughness checked). We use it as the base, then inflate
+    # (slope, step height checked). We use it as the base, then inflate
     # obstacle walls on top to prevent the robot center from getting too close.
     shape = params.get('shape', 'circular')
     halfW = params.get('halfW', params.get('radius', 0.35))
@@ -923,7 +923,7 @@ def run_coverage(
 
     if trav_mask is not None:
         # Use traversability map as the primary driveable surface.
-        # The traversability map already encodes walls, slopes, steps, roughness.
+        # The traversability map already encodes walls, slopes, and steps.
         # We only inflate the traversability boundary (edges of non-traversable regions)
         # by the robot half-footprint so the robot center stays safely away from edges.
         trav2d = trav_mask.reshape(h, w)

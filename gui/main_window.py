@@ -24,7 +24,7 @@ from PyQt5.QtWidgets import (
     QFileDialog, QMessageBox, QSizePolicy,
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QRect
-from PyQt5.QtGui import QImage, QColor
+from PyQt5.QtGui import QImage, QColor, QIcon
 
 from config import (
     DEFAULT_PCD_IN as DEF_IN,
@@ -117,6 +117,9 @@ class MainWin(QMainWindow):
     def __init__(s):
         super().__init__()
         s.setWindowTitle("Robot Inclusivity Index (RII)")
+        _icon_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "icon.png")
+        if os.path.isfile(_icon_path):
+            s.setWindowIcon(QIcon(_icon_path))
         s.setMinimumSize(1300, 800)
         default_in = resolve_point_cloud_path(DEF_IN, ["GlobalMap"])
         s._wk = []
@@ -769,11 +772,16 @@ class MainWin(QMainWindow):
                     s.view_tab_bar.setCurrentIndex(i)
                     s.view_tab_bar.blockSignals(False)
                     break
-        if nm in ("3D Viewer", "Clean Cloud", "Vertical Coverage"):
+        is_3d = nm in ("3D Viewer", "Clean Cloud", "Vertical Coverage")
+        if hasattr(s, '_zclip_bar'):
+            s._zclip_bar.setVisible(is_3d)
+        if is_3d:
             s.mw.clear_focus()
             s.view_stack.setCurrentWidget(s.pcw)
             if nm in s._clouds:
                 s.pcw.set_cloud(s._clouds[nm])
+                if s._zclip_cb.isChecked():
+                    s._apply_zclip()
             else:
                 s.pcw.clear_cloud(f"No {nm.lower()} loaded")
             return
@@ -796,6 +804,11 @@ class MainWin(QMainWindow):
         if hasattr(s, 'view_tab_bar'):
             return s.view_tab_bar.tabText(s.view_tab_bar.currentIndex())
         return PRIMARY_SELECTION_VIEW
+
+    def _apply_zclip(s):
+        """Clip the current 3D cloud above the chosen Z threshold."""
+        if hasattr(s, 'pcw') and hasattr(s.pcw, 'clip_z'):
+            s.pcw.clip_z(s._zclip_spin.value())
 
     # ── Split View ──
     def _toggle_split_view(s):
@@ -1086,8 +1099,6 @@ class MainWin(QMainWindow):
         )
         th.addWidget(s.t_step)
         l4.addLayout(th)
-        # Hidden roughness param — kept for backend compatibility with a permissive default
-        s.t_rough = QDoubleSpinBox(); s.t_rough.setRange(0.01, 9999.0); s.t_rough.setValue(9999.0); s.t_rough.hide()
         l4.addWidget(QLabel("Terrain thresholds for traversability: max_slope = steepest ramp, max_step = tallest climbable step."))
         s.b4 = QPushButton("Generate 2D Map"); s.b4.setStyleSheet(s._B("#aa66ff"))
         s.b4.clicked.connect(s._step4); l4.addWidget(s.b4)
@@ -1754,6 +1765,37 @@ class MainWin(QMainWindow):
         s.prog = QProgressBar(); s.prog.setTextVisible(False); s.prog.setMaximumHeight(4)
         rl.addWidget(s.prog)
 
+        # ── Z-clip toolbar (visible only in 3D views) ──
+        s._zclip_bar = QWidget()
+        zch = QHBoxLayout(s._zclip_bar); zch.setContentsMargins(4, 2, 4, 2); zch.setSpacing(6)
+        s._zclip_cb = QCheckBox("Remove roof / ceiling")
+        s._zclip_cb.setToolTip("Hide points above a Z threshold to reveal the ground underneath.")
+        zch.addWidget(s._zclip_cb)
+        zch.addWidget(QLabel("Max Z (m):"))
+        s._zclip_spin = QDoubleSpinBox()
+        s._zclip_spin.setRange(-50.0, 50.0)
+        s._zclip_spin.setDecimals(2)
+        s._zclip_spin.setSingleStep(0.1)
+        s._zclip_spin.setValue(3.0)
+        s._zclip_spin.setToolTip("Absolute Z height above which points are hidden.")
+        s._zclip_spin.setEnabled(False)
+        zch.addWidget(s._zclip_spin)
+        zch.addStretch()
+        s._zclip_bar.hide()
+        rl.addWidget(s._zclip_bar)
+
+        def _on_zclip_toggle(checked):
+            s._zclip_spin.setEnabled(checked)
+            if checked:
+                s._apply_zclip()
+            else:
+                # Restore full cloud
+                active = s._active_view_name()
+                if active in s._clouds:
+                    s.pcw.set_cloud(s._clouds[active])
+        s._zclip_cb.toggled.connect(_on_zclip_toggle)
+        s._zclip_spin.valueChanged.connect(lambda _: s._apply_zclip() if s._zclip_cb.isChecked() else None)
+
         # Primary viewer (always present)
         s.view_stack = QStackedWidget()
         s.mw = MapW(); s.mw.sel_changed.connect(s._on_sel); s.view_stack.addWidget(s.mw)
@@ -1916,6 +1958,9 @@ class MainWin(QMainWindow):
             pts = load_xyz_points(p)
             preset = estimate_ground_preserving_preset(pts)
             floor_z = preset["floor_anchor_z"]
+            # Auto-set a sensible Z-clip ceiling so the user can toggle roof removal
+            if hasattr(s, '_zclip_spin') and not s._zclip_cb.isChecked():
+                s._zclip_spin.setValue(round(floor_z + max(xz, 1.0), 2))
             if mz >= 0 and xz >= 0:
                 abs_min = floor_z + mz
                 abs_max = floor_z + xz
@@ -1944,7 +1989,7 @@ class MainWin(QMainWindow):
             f"Generating Step 2 map from the {src_label}: {os.path.basename(p)}",
             "info",
         )
-        w = MapBuildW(p, sd, mz, xz, s.t_slope.value(), s.t_step.value(), s.t_rough.value())
+        w = MapBuildW(p, sd, mz, xz, s.t_slope.value(), s.t_step.value())
         w.log.connect(s._log); w.prog.connect(s.prog.setValue)
         def done(ok, msg):
             s.b4.setEnabled(True)

@@ -68,13 +68,12 @@ layers are produced: obstacle, traversability, and floor.
 | `pt_max_z` | 1.00 m | -20 – 20 | Maximum z height for obstacle projection |
 | `max_slope` | 35.0° | 1 – 89 | Traversability: maximum ground slope before marking non-traversable |
 | `max_step` | 0.25 m | 0.01 – 9999 | Traversability: maximum step height between adjacent cells |
-| `max_rough` | 0.15 m | 0.01 – 9999 | Traversability: maximum surface roughness |
 
 **Tuning the traversable ground map** — The goal is to make the traversable
 ground map match the obstacle map as closely as possible. Start by adjusting
 `pt_min_z` and `pt_max_z`, then click **Clean Map** to regenerate. Once the
-z-range is close, fine-tune with `max_step`, `max_slope`, and `max_rough` to
-capture stairs, ramps, or uneven surfaces.
+z-range is close, fine-tune with `max_step` and `max_slope` to
+capture stairs and ramps.
 
 **Edit Traversable Ground** — After map generation, the traversable ground
 mask can be manually painted using circle, rectangle, or free-draw brushes
@@ -205,7 +204,7 @@ Measures what fraction of the floor a robot can physically reach.
    blocked.
 2. **BFS reachability** — A breadth-first search floods outward from a start
    position over all unblocked floor cells, optionally constrained by a
-   traversability sidecar mask (slope, step height, roughness thresholds).
+   traversability sidecar mask (slope and step height thresholds).
 3. **Coverage ratio**:
 
 ```
@@ -293,7 +292,7 @@ Maps use the ROS Nav2 occupancy grid format:
 
 Three map layers are generated from the point cloud:
 1. **Obstacle map** (`map.pgm`) — binary occupied/free
-2. **Traversability sidecar** (`map_traversable.pgm`) — slope, step, roughness filtered
+2. **Traversability sidecar** (`map_traversable.pgm`) — slope and step height filtered
 3. **Floor sidecar** (`map_floor.pgm`) — ground-plane cells only
 
 ## Dependencies

@@ -26,6 +26,28 @@ except Exception:
     PYQTGRAPH_GL_AVAILABLE = False
 
 
+def _height_colormap(z_vals: np.ndarray) -> np.ndarray:
+    """Map Z values to a blue→cyan→green→yellow→red heatmap. Returns (N, 3) float32 in [0,1]."""
+    z_lo, z_hi = np.percentile(z_vals, [5, 95])
+    if z_hi <= z_lo:
+        z_hi = z_lo + 1.0
+    t = np.clip((z_vals - z_lo) / (z_hi - z_lo), 0.0, 1.0).astype(np.float32)
+    # 4-segment linear interpolation: blue→cyan→green→yellow→red
+    r = np.where(t < 0.25, 0.0,
+        np.where(t < 0.50, (t - 0.25) * 4.0,
+        np.where(t < 0.75, 1.0,
+                           1.0))).astype(np.float32)
+    g = np.where(t < 0.25, t * 4.0,
+        np.where(t < 0.50, 1.0,
+        np.where(t < 0.75, 1.0 - (t - 0.50) * 4.0,
+                           0.0))).astype(np.float32)
+    b = np.where(t < 0.25, 1.0,
+        np.where(t < 0.50, 1.0 - (t - 0.25) * 4.0,
+        np.where(t < 0.75, 0.0,
+                           0.0))).astype(np.float32)
+    return np.column_stack((r, g, b)).astype(np.float32)
+
+
 class MapW(QWidget):
     sel_changed = pyqtSignal(object)
     hover_coords = pyqtSignal(int, int, float, float)  # pixel_x, pixel_y, world_x, world_y
@@ -534,12 +556,16 @@ class PointCloudPreviewW(QWidget):
         s._pan = np.array([0.0, 0.0], dtype=np.float32)
         s._drag_btn = None
         s._last_pos = None
+        s._raw_pts = None
+        s._raw_cloud = None
 
     def clear_cloud(s, message="No point cloud"):
         s._msg = message
         s._img = None
         s._points = None
         s._z_vals = None
+        s._raw_pts = None
+        s._raw_cloud = None
         s.update()
 
     def set_cloud(s, cloud):
@@ -547,6 +573,27 @@ class PointCloudPreviewW(QWidget):
         if pts.size == 0:
             s.clear_cloud("Point cloud is empty")
             return
+        s._raw_pts = pts.copy()
+        s._raw_cloud = cloud
+        s._apply_preview_cloud(pts, cloud)
+
+    def clip_z(s, max_z):
+        """Re-render keeping only points with Z <= max_z."""
+        if s._raw_pts is None:
+            return
+        mask = s._raw_pts[:, 2] <= max_z
+        pts = s._raw_pts[mask]
+        if pts.size == 0:
+            s.clear_cloud("All points clipped")
+            return
+        cloud = dict(s._raw_cloud)
+        cloud["points"] = pts
+        if "colors" in cloud and cloud["colors"] is not None:
+            cloud["colors"] = np.asarray(cloud["colors"])[mask]
+        cloud["display_points"] = int(pts.shape[0])
+        s._apply_preview_cloud(pts, cloud)
+
+    def _apply_preview_cloud(s, pts, cloud):
         mins = pts.min(axis=0)
         maxs = pts.max(axis=0)
         center = (mins + maxs) * 0.5
@@ -611,12 +658,8 @@ class PointCloudPreviewW(QWidget):
         if s._colors is not None and s._colors.shape[0] == s._points.shape[0]:
             colors = s._colors[inside]
         else:
-            z_lo, z_hi = np.percentile(z_vals, [5, 95])
-            if z_hi <= z_lo:
-                z_hi = z_lo + 1.0
-            t = np.clip((z_vals - z_lo) / (z_hi - z_lo), 0.0, 1.0)
-            shade = (175 + 70 * (1.0 - t)).astype(np.uint8)
-            colors = np.column_stack((shade, shade, shade))
+            rgb_f = _height_colormap(z_vals)
+            colors = (rgb_f * 255).astype(np.uint8)
 
         order = np.argsort(depth)
         xs = xs[order]
@@ -712,6 +755,8 @@ if PYQTGRAPH_GL_AVAILABLE:
             s._radius = 1.0
             s._count = 0
             s._last_pos = None
+            s._raw_pts = None
+            s._raw_cloud = None
             s._scatter = pgl.GLScatterPlotItem(
                 pos=np.zeros((0, 3), dtype=np.float32),
                 color=np.zeros((0, 4), dtype=np.float32),
@@ -727,6 +772,8 @@ if PYQTGRAPH_GL_AVAILABLE:
             s._msg = message
             s._count = 0
             s._legend = []
+            s._raw_pts = None
+            s._raw_cloud = None
             try:
                 s._scatter.setData(
                     pos=np.zeros((0, 3), dtype=np.float32),
@@ -745,52 +792,70 @@ if PYQTGRAPH_GL_AVAILABLE:
                     s.clear_cloud("Point cloud is empty")
                     return
 
-                mins = pts.min(axis=0)
-                maxs = pts.max(axis=0)
-                center = (mins + maxs) * 0.5
-                centered = np.ascontiguousarray(pts - center, dtype=np.float32)
-                s._radius = float(0.5 * np.linalg.norm(maxs - mins))
-                if s._radius <= 1e-6:
-                    s._radius = 1.0
+                # Store raw data for Z-clipping
+                s._raw_pts = pts.copy()
+                s._raw_cloud = cloud
 
-                if "colors" in cloud and cloud["colors"] is not None:
-                    rgb = np.asarray(cloud["colors"], dtype=np.float32)
-                    if rgb.max() > 1.0:
-                        rgb = rgb / 255.0
-                    n = rgb.shape[0]
-                    colors = np.column_stack((
-                        rgb[:, 0], rgb[:, 1], rgb[:, 2],
-                        np.full(n, 0.96, dtype=np.float32),
-                    )).astype(np.float32)
-                else:
-                    z_vals = pts[:, 2].astype(np.float32, copy=False)
-                    z_lo, z_hi = np.percentile(z_vals, [5, 95])
-                    if z_hi <= z_lo:
-                        z_hi = z_lo + 1.0
-                    t = np.clip((z_vals - z_lo) / (z_hi - z_lo), 0.0, 1.0).astype(np.float32)
-                    shade = (0.72 + 0.23 * (1.0 - t)).astype(np.float32)
-                    colors = np.column_stack((
-                        shade,
-                        shade,
-                        shade,
-                        np.full_like(t, 0.96),
-                    )).astype(np.float32)
-
-                point_px = max(1.4, min(2.8, 2400.0 / max(centered.shape[0], 1) ** 0.33))
-                s._scatter.setData(pos=centered, color=colors, size=float(point_px), pxMode=True)
-                s._path = cloud.get("path", "")
-                s._label = cloud.get("label", "Point Cloud")
-                s._total_points = int(cloud.get("total_points", pts.shape[0]))
-                s._display_points = int(cloud.get("display_points", pts.shape[0]))
-                s._sampled = bool(cloud.get("sampled", False))
-                s._count = centered.shape[0]
-                s._center_offset = center.copy()
-                s._msg = ""
-                # Store legend entries for 2D overlay
-                s._legend = cloud.get("legend", [])
-                s.reset_view()
+                s._apply_cloud(pts, cloud)
             except Exception as e:
                 s.gl_failed.emit(f"pyqtgraph.opengl failed: {e}")
+
+        def clip_z(s, max_z):
+            """Re-render the cloud keeping only points with Z <= max_z."""
+            if s._raw_pts is None:
+                return
+            mask = s._raw_pts[:, 2] <= max_z
+            pts = s._raw_pts[mask]
+            if pts.size == 0:
+                s.clear_cloud("All points clipped")
+                return
+            cloud = dict(s._raw_cloud)
+            cloud["points"] = pts
+            if "colors" in cloud and cloud["colors"] is not None:
+                cloud["colors"] = np.asarray(cloud["colors"])[mask]
+            cloud["display_points"] = int(pts.shape[0])
+            s._apply_cloud(pts, cloud, keep_camera=True)
+
+        def _apply_cloud(s, pts, cloud, keep_camera=False):
+            mins = pts.min(axis=0)
+            maxs = pts.max(axis=0)
+            center = (mins + maxs) * 0.5
+            centered = np.ascontiguousarray(pts - center, dtype=np.float32)
+            s._radius = float(0.5 * np.linalg.norm(maxs - mins))
+            if s._radius <= 1e-6:
+                s._radius = 1.0
+
+            if "colors" in cloud and cloud["colors"] is not None:
+                rgb = np.asarray(cloud["colors"], dtype=np.float32)
+                if rgb.max() > 1.0:
+                    rgb = rgb / 255.0
+                n = rgb.shape[0]
+                colors = np.column_stack((
+                    rgb[:, 0], rgb[:, 1], rgb[:, 2],
+                    np.full(n, 0.96, dtype=np.float32),
+                )).astype(np.float32)
+            else:
+                rgb = _height_colormap(pts[:, 2])
+                colors = np.column_stack((
+                    rgb, np.full(rgb.shape[0], 0.96, dtype=np.float32),
+                )).astype(np.float32)
+
+            point_px = max(1.4, min(2.8, 2400.0 / max(centered.shape[0], 1) ** 0.33))
+            s._scatter.setData(pos=centered, color=colors, size=float(point_px), pxMode=True)
+            s._path = cloud.get("path", "")
+            s._label = cloud.get("label", "Point Cloud")
+            s._total_points = int(cloud.get("total_points", pts.shape[0]))
+            s._display_points = int(cloud.get("display_points", pts.shape[0]))
+            s._sampled = bool(cloud.get("sampled", False))
+            s._count = centered.shape[0]
+            s._center_offset = center.copy()
+            s._msg = ""
+            # Store legend entries for 2D overlay
+            s._legend = cloud.get("legend", [])
+            if not keep_camera:
+                s.reset_view()
+            else:
+                s.update()
 
         def reset_view(s):
             s.opts["center"] = Vector(0.0, 0.0, 0.0)

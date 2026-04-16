@@ -640,10 +640,11 @@ def _resolve_terrain_min_points_threshold(
     keep_requested = float(np.mean(observed >= requested))
     applied = requested
     mode = "requested"
+    floor_min = max(2, requested // 2)  # never drop below 2 points per cell
     if requested > 1 and keep_requested < float(target_keep_fraction):
         mode = "adaptive"
-        applied = 1
-        for candidate in range(requested - 1, 0, -1):
+        applied = floor_min
+        for candidate in range(requested - 1, floor_min - 1, -1):
             keep_candidate = float(np.mean(observed >= candidate))
             applied = candidate
             if keep_candidate >= float(target_keep_fraction):
@@ -660,9 +661,59 @@ def _resolve_terrain_min_points_threshold(
     }
 
 
+def _nan_safe_smooth(z: np.ndarray, sigma_cells: float = 1.5) -> np.ndarray:
+    """NaN-aware Gaussian smoothing of a 2D heightmap (pure numpy, no scipy).
+
+    Replaces each cell with a weighted average of its neighbors using a Gaussian
+    kernel, ignoring NaN cells.  This removes per-cell noise from the ground
+    heightmap so that gradient-based slope estimates are stable and match the true
+    physical slope of ramps / terrain.
+    """
+    radius = int(math.ceil(2.0 * sigma_cells))
+    size = 2 * radius + 1
+    ax = np.arange(-radius, radius + 1, dtype=np.float32)
+    kernel_1d = np.exp(-0.5 * (ax / sigma_cells) ** 2)
+    kernel = np.outer(kernel_1d, kernel_1d).astype(np.float32)
+
+    zz = np.asarray(z, dtype=np.float32).copy()
+    valid = (~np.isnan(zz)).astype(np.float32)
+    zz_filled = np.where(np.isnan(zz), 0.0, zz).astype(np.float32)
+
+    pad = radius
+    zp = np.pad(zz_filled, pad, mode="constant", constant_values=0.0)
+    vp = np.pad(valid, pad, mode="constant", constant_values=0.0)
+    h, w = zz.shape
+    weighted_sum = np.zeros((h, w), dtype=np.float64)
+    weight_sum = np.zeros((h, w), dtype=np.float64)
+    for dy in range(size):
+        for dx in range(size):
+            k = float(kernel[dy, dx])
+            weighted_sum += k * zp[dy:dy + h, dx:dx + w]
+            weight_sum += k * vp[dy:dy + h, dx:dx + w]
+
+    out = np.full((h, w), np.nan, dtype=np.float32)
+    good = weight_sum > 1e-12
+    out[good] = (weighted_sum[good] / weight_sum[good]).astype(np.float32)
+    # Keep original NaN cells as NaN
+    out[~valid.astype(bool)] = np.nan
+    return out
+
+
+def _nan_safe_median_3x3(z: np.ndarray) -> np.ndarray:
+    """NaN-aware 3x3 median filter — removes outlier height spikes without blurring edges."""
+    h, w = z.shape
+    padded = np.pad(z.astype(np.float32), 1, mode="constant", constant_values=np.nan)
+    stack = np.stack([padded[r:r + h, c:c + w] for r in range(3) for c in range(3)], axis=0)
+    with np.errstate(all="ignore"):
+        out = np.nanmedian(stack, axis=0).astype(np.float32)
+    out[np.isnan(z)] = np.nan
+    return out
+
+
 def _nan_safe_gradients(z: np.ndarray, cell_size: float) -> tuple[np.ndarray, np.ndarray]:
     """Fill small NaN holes from 4-neighbors before computing terrain gradients."""
     zz = np.asarray(z, dtype=np.float32).copy()
+    # Fill small NaN holes from 4-neighbors
     for _ in range(6):
         nan_mask = np.isnan(zz)
         if not nan_mask.any():
@@ -685,29 +736,6 @@ def _nan_safe_gradients(z: np.ndarray, cell_size: float) -> tuple[np.ndarray, np
     dzdy, dzdx = np.gradient(zz, cell_size, cell_size)
     return dzdx.astype(np.float32, copy=False), dzdy.astype(np.float32, copy=False)
 
-
-def _roughness_3x3(z: np.ndarray) -> np.ndarray:
-    """Local 3x3 height roughness using NaN-aware standard deviation."""
-    height, width = z.shape
-    padded = np.pad(np.asarray(z, dtype=np.float32), 1, mode="constant", constant_values=np.nan)
-    neighbors = [
-        padded[row:row + height, col:col + width]
-        for row in range(3)
-        for col in range(3)
-    ]
-    stack = np.stack(neighbors, axis=0)
-    valid = ~np.isnan(stack)
-    counts = valid.sum(axis=0)
-    sums = np.nansum(stack, axis=0)
-    means = np.zeros((height, width), dtype=np.float32)
-    nonzero = counts > 0
-    means[nonzero] = (sums[nonzero] / counts[nonzero]).astype(np.float32, copy=False)
-    centered = np.where(valid, stack - means[None, :, :], 0.0)
-    var = np.zeros((height, width), dtype=np.float32)
-    var[nonzero] = (np.sum(centered[:, nonzero] ** 2, axis=0) / counts[nonzero]).astype(np.float32, copy=False)
-    out = np.full((height, width), np.nan, dtype=np.float32)
-    out[nonzero] = np.sqrt(var[nonzero]).astype(np.float32, copy=False)
-    return out
 
 
 def _step_height(z: np.ndarray) -> np.ndarray:
@@ -735,6 +763,60 @@ def _step_height(z: np.ndarray) -> np.ndarray:
     valid = ~np.isnan(dz)
     out[valid] = np.maximum(out[valid], dz[valid])
     return out
+
+
+def _morph_close(mask: np.ndarray, radius: int = 2) -> np.ndarray:
+    """Morphological closing (dilate then erode) to bridge small gaps in a bool mask."""
+    h, w = mask.shape
+    arr = mask.astype(np.uint8)
+    # Dilate: set cell to 1 if any neighbor within radius is 1
+    dilated = arr.copy()
+    for _ in range(radius):
+        padded = np.pad(dilated, 1, mode="constant", constant_values=0)
+        dilated = (
+            padded[1:h+1, 1:w+1] | padded[0:h, 1:w+1] | padded[2:h+2, 1:w+1] |
+            padded[1:h+1, 0:w] | padded[1:h+1, 2:w+2]
+        ).astype(np.uint8)
+    # Erode: pad with 1s (edge replication) so boundaries are not eaten away
+    eroded = dilated.copy()
+    for _ in range(radius):
+        padded = np.pad(eroded, 1, mode="edge")
+        eroded = (
+            padded[1:h+1, 1:w+1] & padded[0:h, 1:w+1] & padded[2:h+2, 1:w+1] &
+            padded[1:h+1, 0:w] & padded[1:h+1, 2:w+2]
+        ).astype(np.uint8)
+    return eroded.astype(bool)
+
+
+def _remove_small_components(mask: np.ndarray, min_cells: int = 50) -> np.ndarray:
+    """Remove connected components smaller than min_cells from a boolean mask."""
+    height, width = mask.shape
+    labels = np.zeros_like(mask, dtype=np.int32)
+    comp_id = 0
+    comp_sizes: list[int] = [0]  # 0 = background
+
+    for row in range(height):
+        for col in range(width):
+            if not mask[row, col] or labels[row, col]:
+                continue
+            comp_id += 1
+            queue = deque([(row, col)])
+            labels[row, col] = comp_id
+            size = 0
+            while queue:
+                rr, cc = queue.popleft()
+                size += 1
+                for dr, dc in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                    nr, nc = rr + dr, cc + dc
+                    if 0 <= nr < height and 0 <= nc < width and mask[nr, nc] and not labels[nr, nc]:
+                        labels[nr, nc] = comp_id
+                        queue.append((nr, nc))
+            comp_sizes.append(size)
+
+    comp_sizes_arr = np.array(comp_sizes, dtype=np.int32)
+    keep = comp_sizes_arr >= min_cells
+    keep[0] = False  # background always excluded
+    return keep[labels]
 
 
 def _largest_component(mask: np.ndarray) -> np.ndarray:
@@ -777,7 +859,6 @@ def _terrain_masks_from_points(
     ground_percentile: float = 10.0,
     max_slope_deg: float = 35.0,
     max_step_m: float = 0.25,
-    max_roughness_m: float = 0.15,
     origin_xy: tuple[float, float] | None = None,
     shape: tuple[int, int] | None = None,
     z_mode: str = "auto",
@@ -854,17 +935,34 @@ def _terrain_masks_from_points(
     ground[counts < int(applied_min_points_per_cell)] = np.nan
     known = ~np.isnan(ground)
 
-    dzdx, dzdy = _nan_safe_gradients(ground, internal_cell)
+    # ── Denoise the ground heightmap ──
+    # 1. Median filter: removes outlier spikes without blurring real edges (ramps, steps)
+    ground_clean = _nan_safe_median_3x3(ground)
+    # 2. Gaussian smooth: suppresses remaining noise so gradients are stable
+    ground_smooth = _nan_safe_smooth(ground_clean, sigma_cells=2.0)
+
+    dzdx, dzdy = _nan_safe_gradients(ground_smooth, internal_cell)
     slope_deg = np.degrees(np.arctan(np.sqrt(dzdx ** 2 + dzdy ** 2)))
-    rough = _roughness_3x3(ground)
-    step = _step_height(ground)
+    step = _step_height(ground_smooth)
 
     traversable = (
         known
         & (slope_deg <= float(max_slope_deg))
         & (step <= float(max_step_m))
-        & (rough <= float(max_roughness_m))
     )
+
+    # ── Clean the traversable mask ──
+    # 1. Remove small isolated known-cell clusters (scattered LiDAR noise)
+    known = _remove_small_components(known, min_cells=20)
+    traversable = traversable & known
+    # 2. Remove small isolated traversable specks
+    traversable = _remove_small_components(traversable, min_cells=20)
+    # 3. Morphological closing: bridge small gaps so areas stay connected
+    traversable = _morph_close(traversable, radius=3) & known
+    # 4. Fill small non-traversable holes inside traversable regions
+    holes_mask = _remove_small_components(~traversable & known, min_cells=20)
+    traversable = traversable | (~holes_mask & known)
+
     reachable = _largest_component(traversable)
 
     min_x, min_y, _, _ = bounds
@@ -929,7 +1027,6 @@ def build_traversability_image(
     ground_percentile: float = 10.0,
     max_slope_deg: float = 35.0,
     max_step_m: float = 0.25,
-    max_roughness_m: float = 0.15,
     reachable_only: bool = False,
     origin_xy: tuple[float, float] | None = None,
     shape: tuple[int, int] | None = None,
@@ -947,7 +1044,6 @@ def build_traversability_image(
         ground_percentile=ground_percentile,
         max_slope_deg=max_slope_deg,
         max_step_m=max_step_m,
-        max_roughness_m=max_roughness_m,
         origin_xy=origin_xy,
         shape=shape,
         z_mode=z_mode,
@@ -968,7 +1064,6 @@ def build_known_floor_image(
     ground_percentile: float = 10.0,
     max_slope_deg: float = 35.0,
     max_step_m: float = 0.25,
-    max_roughness_m: float = 0.15,
     origin_xy: tuple[float, float] | None = None,
     shape: tuple[int, int] | None = None,
     z_mode: str = "auto",
@@ -984,7 +1079,6 @@ def build_known_floor_image(
         ground_percentile=ground_percentile,
         max_slope_deg=max_slope_deg,
         max_step_m=max_step_m,
-        max_roughness_m=max_roughness_m,
         origin_xy=origin_xy,
         shape=shape,
         z_mode=z_mode,
@@ -1111,7 +1205,6 @@ def export_traversability_map(
     ground_percentile: float = 10.0,
     max_slope_deg: float = 35.0,
     max_step_m: float = 0.25,
-    max_roughness_m: float = 0.15,
     reachable_only: bool = False,
     origin_xy: tuple[float, float] | None = None,
     shape: tuple[int, int] | None = None,
@@ -1129,7 +1222,6 @@ def export_traversability_map(
         ground_percentile=ground_percentile,
         max_slope_deg=max_slope_deg,
         max_step_m=max_step_m,
-        max_roughness_m=max_roughness_m,
         reachable_only=reachable_only,
         origin_xy=origin_xy,
         shape=shape,
@@ -1154,7 +1246,6 @@ def export_known_floor_map(
     ground_percentile: float = 10.0,
     max_slope_deg: float = 35.0,
     max_step_m: float = 0.25,
-    max_roughness_m: float = 0.15,
     origin_xy: tuple[float, float] | None = None,
     shape: tuple[int, int] | None = None,
     z_mode: str = "auto",
@@ -1170,7 +1261,6 @@ def export_known_floor_map(
         ground_percentile=ground_percentile,
         max_slope_deg=max_slope_deg,
         max_step_m=max_step_m,
-        max_roughness_m=max_roughness_m,
         origin_xy=origin_xy,
         shape=shape,
         z_mode=z_mode,
