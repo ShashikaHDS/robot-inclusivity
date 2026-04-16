@@ -142,8 +142,13 @@ def _gaussian_smooth(z: np.ndarray, sigma: float = 2.0) -> np.ndarray:
 
 # ── Slope Computation ─────────────────────────────────────────────────────────
 
-def _compute_slope(ground: np.ndarray, cell_size: float) -> np.ndarray:
-    """Compute per-cell slope in degrees from a ground heightmap."""
+def _compute_slope_and_gradient(
+    ground: np.ndarray, cell_size: float,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Compute per-cell slope and gradient from a ground heightmap.
+
+    Returns (slope_deg, dzdx, dzdy).
+    """
     # Fill small NaN gaps for gradient computation
     zz = ground.astype(np.float32).copy()
     for _ in range(4):
@@ -165,10 +170,46 @@ def _compute_slope(ground: np.ndarray, cell_size: float) -> np.ndarray:
         zz[fillable] = means[fillable]
 
     dzdy, dzdx = np.gradient(zz, cell_size, cell_size)
+    dzdx = dzdx.astype(np.float32)
+    dzdy = dzdy.astype(np.float32)
     slope_deg = np.degrees(np.arctan(np.sqrt(dzdx**2 + dzdy**2))).astype(np.float32)
     # Restore NaN where original was NaN
-    slope_deg[np.isnan(ground)] = np.nan
-    return slope_deg
+    nan_orig = np.isnan(ground)
+    slope_deg[nan_orig] = np.nan
+    dzdx[nan_orig] = np.nan
+    dzdy[nan_orig] = np.nan
+    return slope_deg, dzdx, dzdy
+
+
+def _gradient_direction_consistency(
+    dzdx: np.ndarray, dzdy: np.ndarray, rows: np.ndarray, cols: np.ndarray,
+) -> float:
+    """Measure how consistent the gradient direction is within a set of cells.
+
+    Returns a score between 0 (random directions) and 1 (perfectly uniform direction).
+    A real ramp has consistent direction (score > 0.5).
+    """
+    gx = dzdx[rows, cols]
+    gy = dzdy[rows, cols]
+    valid = np.isfinite(gx) & np.isfinite(gy)
+    gx, gy = gx[valid], gy[valid]
+    if len(gx) < 3:
+        return 0.0
+
+    # Normalize each gradient to unit vector
+    mag = np.sqrt(gx**2 + gy**2)
+    nonzero = mag > 1e-8
+    if nonzero.sum() < 3:
+        return 0.0
+    gx_n = gx[nonzero] / mag[nonzero]
+    gy_n = gy[nonzero] / mag[nonzero]
+
+    # Mean direction vector — its magnitude indicates consistency
+    # (1.0 = all same direction, 0.0 = uniformly random)
+    mean_x = float(np.mean(gx_n))
+    mean_y = float(np.mean(gy_n))
+    consistency = math.sqrt(mean_x**2 + mean_y**2)
+    return consistency
 
 
 # ── Ramp Detection ────────────────────────────────────────────────────────────
@@ -176,7 +217,7 @@ def _compute_slope(ground: np.ndarray, cell_size: float) -> np.ndarray:
 def detect_ramps_by_slope(
     points: np.ndarray,
     cell_size: float = 0.20,
-    min_ramp_slope_deg: float = 3.0,
+    min_ramp_slope_deg: float = 4.0,
     min_area_m2: float = 2.0,
     min_length_m: float = 1.0,
     min_width_m: float = 0.8,
@@ -233,9 +274,9 @@ def detect_ramps_by_slope(
     log("[Ramp] Smoothing heightmap...", "info")
     ground_smooth = _gaussian_smooth(_median_3x3(ground), sigma=2.0)
 
-    # Compute slope
+    # Compute slope and gradient direction
     log("[Ramp] Computing slope...", "info")
-    slope_deg = _compute_slope(ground_smooth, cell_size)
+    slope_deg, dzdx, dzdy = _compute_slope_and_gradient(ground_smooth, cell_size)
 
     # Threshold → ramp candidate mask
     valid = ~np.isnan(slope_deg)
@@ -322,6 +363,12 @@ def detect_ramps_by_slope(
             continue
         area = len(comp) * cell_size * cell_size
         if area < min_area_m2:
+            continue
+
+        # Filter by gradient direction consistency
+        # Real ramps have consistent slope direction (score > 0.5)
+        consistency = _gradient_direction_consistency(dzdx, dzdy, rows, cols)
+        if consistency < 0.5:
             continue
 
         # Ramp angle from height range over length
@@ -440,7 +487,7 @@ def run_ground_analysis(
     max_slope_deg: float = 35.0,
     max_step_m: float = 0.25,
     cell_size: float = 0.20,
-    min_ramp_slope_deg: float = 3.0,
+    min_ramp_slope_deg: float = 4.0,
     log: callable = None,
     **kwargs,
 ) -> GroundAnalysisResult:
@@ -452,7 +499,7 @@ def run_ground_analysis(
     max_slope_deg : robot maximum traversable slope
     max_step_m : robot maximum climbable step height
     cell_size : analysis grid cell size
-    min_ramp_slope_deg : minimum slope to detect as ramp (default 3°)
+    min_ramp_slope_deg : minimum slope to detect as ramp (default 4°)
     log : optional logging callback(message, level)
     """
     if log is None:
