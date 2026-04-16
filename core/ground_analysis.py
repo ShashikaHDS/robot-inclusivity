@@ -463,6 +463,10 @@ def _find_transition_zone(
             # Ramp angle from height range over horizontal length
             angle_deg = float(np.degrees(np.arctan2(z_range, length_m)))
 
+            # Real ramps are longer than 1m and wider than 0.8m — skip noise
+            if length_m < 1.0 or width_m < 0.8:
+                continue
+
             # Ensure start is the low end
             if ch[min_idx] > ch[max_idx]:
                 start_xy, end_xy = end_xy, start_xy
@@ -483,7 +487,10 @@ def _find_transition_zone(
                 cells=cells,
             ))
         else:
-            # Step: abrupt change
+            # Step: abrupt change — must be at least 0.8m wide to matter
+            edge_w = float(len(comp)) * cell_size
+            if edge_w < 0.8:
+                continue
             cx = float(np.mean(world_x[valid]))
             cy = float(np.mean(world_y[valid]))
             transitions.append(TransitionInfo(
