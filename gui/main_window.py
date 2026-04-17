@@ -1062,21 +1062,21 @@ class MainWin(QMainWindow):
         s.b1.clicked.connect(s._step1); l1.addWidget(s.b1)
         # Noise filter
         filter_row = QHBoxLayout()
-        s.cb_noise_filter = QCheckBox("Apply noise filter (SOR)")
+        s.cb_noise_filter = QCheckBox("Apply noise filter")
         s.cb_noise_filter.setToolTip(
-            "Statistical Outlier Removal — removes scattered noise points.\n"
-            "Points with few neighbors are removed before map generation.\n"
-            "Enable this if your map has scattered false obstacles."
+            "Remove scattered noise points before map generation.\n"
+            "Points with fewer than 'Min neighbors' within 'Radius'\n"
+            "are removed. Enable if your map has scattered false obstacles."
         )
         filter_row.addWidget(s.cb_noise_filter)
-        filter_row.addWidget(QLabel("Neighbors:"))
-        s.sor_k = QSpinBox(); s.sor_k.setRange(3, 50); s.sor_k.setValue(10)
-        s.sor_k.setToolTip("Number of neighbors to consider for SOR.\nHigher = more aggressive filtering.")
-        filter_row.addWidget(s.sor_k)
-        filter_row.addWidget(QLabel("Std:"))
-        s.sor_std = QDoubleSpinBox(); s.sor_std.setRange(0.5, 5.0); s.sor_std.setValue(1.5); s.sor_std.setDecimals(1)
-        s.sor_std.setToolTip("Standard deviation threshold.\nLower = more aggressive (removes more points).\n1.0-1.5 = typical.")
-        filter_row.addWidget(s.sor_std)
+        filter_row.addWidget(QLabel("Radius (m):"))
+        s.filter_radius = QDoubleSpinBox(); s.filter_radius.setRange(0.1, 5.0); s.filter_radius.setValue(0.5); s.filter_radius.setDecimals(1)
+        s.filter_radius.setToolTip("Search radius for neighbor counting.\n0.3-0.5m = typical for LiDAR maps.")
+        filter_row.addWidget(s.filter_radius)
+        filter_row.addWidget(QLabel("Min neighbors:"))
+        s.filter_min_nb = QSpinBox(); s.filter_min_nb.setRange(1, 100); s.filter_min_nb.setValue(5)
+        s.filter_min_nb.setToolTip("Minimum neighbors required within radius.\nPoints with fewer are removed.\n3-5 = light, 10-20 = aggressive.")
+        filter_row.addWidget(s.filter_min_nb)
         s.filter_status = QLabel("")
         s.filter_status.setStyleSheet("color:#059669;font-size:11px")
         filter_row.addWidget(s.filter_status, 1)
@@ -2120,28 +2120,26 @@ class MainWin(QMainWindow):
 
         # Apply noise filter if enabled
         if s.cb_noise_filter.isChecked():
-            s._log("[Filter] Applying Statistical Outlier Removal...", "info")
+            radius = s.filter_radius.value()
+            min_nb = s.filter_min_nb.value()
+            s._log(f"[Filter] Radius Outlier Removal (radius={radius}m, min_neighbors={min_nb})...", "info")
             try:
                 from src.pcd_package.pcd_package.pcd_tools import (
                     load_xyz_points as _load_pts, approximate_density_filter, write_xyz_pcd,
                 )
                 raw_pts = _load_pts(p)
                 n_before = raw_pts.shape[0]
-                sor_radius = 0.10  # search radius for neighbor counting
-                filtered, _ = approximate_density_filter(
-                    raw_pts, sor_radius, 0, sor_std=s.sor_std.value(),
-                )
+                filtered, _ = approximate_density_filter(raw_pts, radius, min_nb)
                 n_after = filtered.shape[0]
                 n_removed = n_before - n_after
                 pct = 100 * n_removed / max(n_before, 1)
-                # Save filtered cloud to temp file
                 filtered_path = os.path.join(sd, "filtered_cloud.pcd")
                 write_xyz_pcd(filtered_path, filtered)
                 p = filtered_path
-                s.filter_status.setText(f"Filtered: {n_removed:,} pts removed ({pct:.1f}%)")
-                s._log(f"[Filter] SOR: {n_before:,} → {n_after:,} points ({n_removed:,} removed, {pct:.1f}%)", "success")
+                s.filter_status.setText(f"Removed {n_removed:,} pts ({pct:.1f}%)")
+                s._log(f"[Filter] {n_before:,} → {n_after:,} points ({n_removed:,} removed, {pct:.1f}%)", "success")
             except Exception as e:
-                s._log(f"[Filter] SOR failed: {e} — using unfiltered cloud", "warn")
+                s._log(f"[Filter] Failed: {e} — using unfiltered cloud", "warn")
                 s.filter_status.setText("Filter failed")
 
         s._log(
