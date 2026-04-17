@@ -1071,11 +1071,11 @@ class MainWin(QMainWindow):
         filter_row.addWidget(s.cb_noise_filter)
         filter_row.addWidget(QLabel("Radius (m):"))
         s.filter_radius = QDoubleSpinBox(); s.filter_radius.setRange(0.1, 5.0); s.filter_radius.setValue(0.5); s.filter_radius.setDecimals(1)
-        s.filter_radius.setToolTip("Search radius for neighbor counting.\n0.3-0.5m = typical for LiDAR maps.")
+        s.filter_radius.setToolTip("Search radius for 2D density check.\n0.5m = typical for LiDAR maps.")
         filter_row.addWidget(s.filter_radius)
-        filter_row.addWidget(QLabel("Min neighbors:"))
-        s.filter_min_nb = QSpinBox(); s.filter_min_nb.setRange(1, 100); s.filter_min_nb.setValue(5)
-        s.filter_min_nb.setToolTip("Minimum neighbors required within radius.\nPoints with fewer are removed.\n3-5 = light, 10-20 = aggressive.")
+        filter_row.addWidget(QLabel("Min density:"))
+        s.filter_min_nb = QSpinBox(); s.filter_min_nb.setRange(1, 1000); s.filter_min_nb.setValue(100)
+        s.filter_min_nb.setToolTip("Minimum point count within radius to keep.\n50 = light cleaning\n100 = medium (recommended)\n200 = aggressive")
         filter_row.addWidget(s.filter_min_nb)
         s.filter_status = QLabel("")
         s.filter_status.setStyleSheet("color:#059669;font-size:11px")
@@ -2118,18 +2118,36 @@ class MainWin(QMainWindow):
         except Exception:
             s.floor_status.setText("")
 
-        # Apply noise filter if enabled
+        # Apply noise filter if enabled — 2D density filter
         if s.cb_noise_filter.isChecked():
             radius = s.filter_radius.value()
             min_nb = s.filter_min_nb.value()
-            s._log(f"[Filter] Radius Outlier Removal (radius={radius}m, min_neighbors={min_nb})...", "info")
+            s._log(f"[Filter] 2D density filter (radius={radius}m, min_density={min_nb})...", "info")
             try:
                 from src.pcd_package.pcd_package.pcd_tools import (
-                    load_xyz_points as _load_pts, approximate_density_filter, write_xyz_pcd,
+                    load_xyz_points as _load_pts, write_xyz_pcd,
                 )
+                from collections import Counter
                 raw_pts = _load_pts(p)
                 n_before = raw_pts.shape[0]
-                filtered, _ = approximate_density_filter(raw_pts, radius, min_nb)
+                # 2D density: count points in XY grid neighborhood
+                cell = max(radius / 2.5, 0.1)
+                search_r = max(1, int(round(radius / cell)))
+                xy = raw_pts[:, :2]
+                gx = np.floor(xy[:, 0] / cell).astype(np.int32)
+                gy = np.floor(xy[:, 1] / cell).astype(np.int32)
+                cell_keys = list(zip(gx.tolist(), gy.tolist()))
+                counts = Counter(cell_keys)
+                density = np.zeros(n_before, dtype=np.int32)
+                for i, key in enumerate(cell_keys):
+                    cx, cy = key
+                    total = 0
+                    for dx in range(-search_r, search_r + 1):
+                        for dy in range(-search_r, search_r + 1):
+                            total += counts.get((cx + dx, cy + dy), 0)
+                    density[i] = total
+                keep = density >= min_nb
+                filtered = raw_pts[keep]
                 n_after = filtered.shape[0]
                 n_removed = n_before - n_after
                 pct = 100 * n_removed / max(n_before, 1)
