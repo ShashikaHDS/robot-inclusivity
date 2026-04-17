@@ -2176,12 +2176,21 @@ class MainWin(QMainWindow):
                 continue
             color = (0, 200, 80, 160) if t.traversable else (220, 40, 40, 160)
 
+            # Check if this is a manual ramp (cells are already in pixel coords)
+            is_manual = getattr(t, '_is_manual', False)
+
             for ci in range(t.cells.shape[0]):
                 row_a, col_a = int(t.cells[ci, 0]), int(t.cells[ci, 1])
-                wx = analysis_origin[0] + (col_a + 0.5) * analysis_cell
-                wy = analysis_origin[1] + (row_a + 0.5) * analysis_cell
-                px = int((wx - map_ox) / map_res)
-                py = map_h - 1 - int((wy - map_oy) / map_res)
+                if is_manual:
+                    # Manual ramp: cells are already pixel (py, px)
+                    py, px = row_a, col_a
+                else:
+                    # Auto-detected: convert from analysis grid to map pixels
+                    wx = analysis_origin[0] + (col_a + 0.5) * analysis_cell
+                    wy = analysis_origin[1] + (row_a + 0.5) * analysis_cell
+                    px = int((wx - map_ox) / map_res)
+                    py = map_h - 1 - int((wy - map_oy) / map_res)
+
                 if 0 <= px < map_w and 0 <= py < map_h:
                     rgba[py, px] = color
                     for dr in range(-1, 2):
@@ -2190,11 +2199,15 @@ class MainWin(QMainWindow):
                             if 0 <= nr < map_h and 0 <= nc < map_w:
                                 rgba[nr, nc] = color
 
-            # Label
-            cx = analysis_origin[0] + float(np.mean(t.cells[:, 1])) * analysis_cell
-            cy = analysis_origin[1] + float(np.mean(t.cells[:, 0])) * analysis_cell
-            lpx = (cx - map_ox) / map_res
-            lpy = map_h - 1 - (cy - map_oy) / map_res
+            # Label position
+            if is_manual:
+                lpx = float(np.mean(t.cells[:, 1]))
+                lpy = float(np.mean(t.cells[:, 0]))
+            else:
+                cx = analysis_origin[0] + float(np.mean(t.cells[:, 1])) * analysis_cell
+                cy = analysis_origin[1] + float(np.mean(t.cells[:, 0])) * analysis_cell
+                lpx = (cx - map_ox) / map_res
+                lpy = map_h - 1 - (cy - map_oy) / map_res
             text = f"{t.angle_deg:.1f}°"
             label_color = (0, 220, 80) if t.traversable else (255, 60, 60)
             labels.append((lpx, lpy, text, label_color))
@@ -2345,6 +2358,7 @@ class MainWin(QMainWindow):
             cells=cells,
             traversable=traversable,
         )
+        t._is_manual = True  # Flag for overlay rendering (cells are pixel coords)
 
         s._manual_ramps.append(t)
 

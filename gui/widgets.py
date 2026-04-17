@@ -82,6 +82,7 @@ class MapW(QWidget):
         s._brush_rect_h = 10
         s._edit_overlay = None
         s._edit_strokes = []
+        s._last_edit_pt = None
         s._ref_overlay = None
         s._ref_overlay_visible = False
         s._transition_overlay = None   # QImage for ramp/step overlay
@@ -276,6 +277,7 @@ class MapW(QWidget):
             pt = s._ic(e.pos(), clamp=True)
             if pt:
                 s._drag_mode = "edit"
+                s._last_edit_pt = pt
                 s._paint_brush(pt[0], pt[1])
             return
         if s._sm and e.button() == Qt.LeftButton:
@@ -312,7 +314,25 @@ class MapW(QWidget):
         if s._drag_mode == "edit":
             pt2 = s._ic(e.pos(), clamp=True)
             if pt2:
-                s._paint_brush(pt2[0], pt2[1])
+                # Interpolate between last edit point and current for continuous stroke
+                last = getattr(s, '_last_edit_pt', None)
+                if last and last != pt2:
+                    x0, y0 = last
+                    x1, y1 = pt2
+                    dx = abs(x1 - x0)
+                    dy = abs(y1 - y0)
+                    steps = max(dx, dy)
+                    if steps > 0:
+                        for i in range(1, steps + 1):
+                            t = i / steps
+                            ix = int(round(x0 + t * (x1 - x0)))
+                            iy = int(round(y0 + t * (y1 - y0)))
+                            s._paint_brush(ix, iy)
+                    else:
+                        s._paint_brush(pt2[0], pt2[1])
+                else:
+                    s._paint_brush(pt2[0], pt2[1])
+                s._last_edit_pt = pt2
             return
         if s._drag_mode == "select":
             if s._selection_mode == "freeform":
@@ -332,6 +352,7 @@ class MapW(QWidget):
     def mouseReleaseEvent(s, e):
         if s._drag_mode == "edit":
             s._drag_mode = None
+            s._last_edit_pt = None
             return
         if s._drag_mode == "select":
             if s._selection_mode == "freeform":
