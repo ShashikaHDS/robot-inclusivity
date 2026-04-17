@@ -112,7 +112,7 @@ class ViewW(QThread):
 
 class MapBuildW(QThread):
     log = pyqtSignal(str, str); done = pyqtSignal(bool, str); prog = pyqtSignal(int)
-    def __init__(s, pcd, sd, mz, xz, max_slope_deg=35.0, max_step_m=0.25, wait_seconds=12, v3_mode=False):
+    def __init__(s, pcd, sd, mz, xz, max_slope_deg=35.0, max_step_m=0.25, wait_seconds=12, v3_mode=False, min_points_per_cell=3):
         super().__init__()
         s.pcd = pcd
         s.sd = sd
@@ -122,6 +122,7 @@ class MapBuildW(QThread):
         s.max_step_m = max_step_m
         s.wait_seconds = wait_seconds
         s.v3_mode = v3_mode
+        s.min_points_per_cell = min_points_per_cell
         s._ps = []
         s._c = False
     def _killall(s):
@@ -206,6 +207,7 @@ class MapBuildW(QThread):
                 "--padding", "0.50",
                 "--min_z", str(s.mz),
                 "--max_z", str(s.xz),
+                "--min-points-per-cell", str(s.min_points_per_cell),
             ]
             trav_cmd = [
                 py, script,

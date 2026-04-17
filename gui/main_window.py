@@ -1122,7 +1122,16 @@ class MainWin(QMainWindow):
             "Points above this are ignored (ceiling, pipes).\n"
             "Set to slightly above robot height."
         )
-        zh.addWidget(s.oz2); l4.addLayout(zh)
+        zh.addWidget(s.oz2)
+        zh.addWidget(QLabel("  Min points/cell:"))
+        s.min_pts_cell = QSpinBox(); s.min_pts_cell.setRange(1, 20); s.min_pts_cell.setValue(3)
+        s.min_pts_cell.setToolTip(
+            "Minimum LiDAR points in a cell to count as an obstacle.\n"
+            "Increase to reduce noise (scattered false obstacles).\n"
+            "  3 = default, 5-8 = cleaner map, 10+ = very aggressive filtering"
+        )
+        zh.addWidget(s.min_pts_cell)
+        l4.addLayout(zh)
         th = QHBoxLayout()
         th.addWidget(QLabel("max_slope (deg):"))
         s.t_slope = QDoubleSpinBox(); s.t_slope.setRange(1, 89); s.t_slope.setValue(35.0); s.t_slope.setDecimals(1)
@@ -2092,7 +2101,7 @@ class MainWin(QMainWindow):
             f"Generating Step 2 map from the {src_label}: {os.path.basename(p)}",
             "info",
         )
-        w = MapBuildW(p, sd, mz, xz, s.t_slope.value(), s.t_step.value(), v3_mode=s._v3_mode)
+        w = MapBuildW(p, sd, mz, xz, s.t_slope.value(), s.t_step.value(), v3_mode=s._v3_mode, min_points_per_cell=s.min_pts_cell.value())
         w.log.connect(s._log); w.prog.connect(s.prog.setValue)
         def done(ok, msg):
             s.b4.setEnabled(True)
