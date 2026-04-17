@@ -2608,7 +2608,7 @@ class MainWin(QMainWindow):
                     trav_sidecar,
                     floor_sidecar,
                     planner=planner,
-                    ground_analysis_result=getattr(s, '_ground_result', None),
+                    ground_analysis_result=None,  # Reference robot passes all ramps
                 )
                 s.ref_result_sig.emit(r, pgm)
             except Exception as e:
