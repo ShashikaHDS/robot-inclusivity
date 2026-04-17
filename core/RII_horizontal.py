@@ -1001,7 +1001,9 @@ def run_coverage(
     bp[:h, :w] = blocked.reshape(h, w)
     tile_sums = bp.reshape(ch, step, cw, step).sum(axis=(1, 3))
     tile_total = step * step
-    coarse = (tile_sums > tile_total * 0.5).astype(np.uint8).ravel()
+    # A coarse cell is blocked if ANY of its fine cells are blocked.
+    # This ensures the full robot body fits — no squeezing through gaps.
+    coarse = (tile_sums > 0).astype(np.uint8).ravel()
     coarseFree = int((coarse == 0).sum())
     L(f"[{label}] Coarse grid: {cw}x{ch}, step={step} ({step*res:.3f}m), free={coarseFree}", "info")
 
