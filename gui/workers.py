@@ -112,7 +112,7 @@ class ViewW(QThread):
 
 class MapBuildW(QThread):
     log = pyqtSignal(str, str); done = pyqtSignal(bool, str); prog = pyqtSignal(int)
-    def __init__(s, pcd, sd, mz, xz, max_slope_deg=35.0, max_step_m=0.25, wait_seconds=12):
+    def __init__(s, pcd, sd, mz, xz, max_slope_deg=35.0, max_step_m=0.25, wait_seconds=12, v3_mode=False):
         super().__init__()
         s.pcd = pcd
         s.sd = sd
@@ -121,6 +121,7 @@ class MapBuildW(QThread):
         s.max_slope_deg = max_slope_deg
         s.max_step_m = max_step_m
         s.wait_seconds = wait_seconds
+        s.v3_mode = v3_mode
         s._ps = []
         s._c = False
     def _killall(s):
@@ -250,43 +251,59 @@ class MapBuildW(QThread):
                 s.done.emit(False, "2D map generation failed")
                 return
 
-            # Step 2: Traversability sidecar
-            s.prog.emit(70)
-            if not s._run_subprocess(trav_cmd, "Mask"):
-                if s._c:
-                    return
-                s._killall()
-                s.log.emit("Traversability sidecar files were not produced.", "warn")
-                s.done.emit(False, "2D map generation failed")
-                return
-            if not os.path.isfile(trav_prefix + ".pgm"):
-                s._killall()
-                s.log.emit("Traversability sidecar files were not produced.", "warn")
-                s.done.emit(False, "2D map generation failed")
-                return
-
-            # Step 3: Floor sidecar
-            s.prog.emit(90)
-            s._run_subprocess(floor_cmd, "Floor")
-            s.prog.emit(95)
-
-            if (
-                os.path.isfile(out_prefix + ".pgm") and
-                os.path.isfile(out_prefix + ".yaml") and
-                os.path.isfile(trav_prefix + ".pgm") and
-                os.path.isfile(floor_prefix + ".pgm")
-            ):
-                s.log.emit(f"Saved: {out_prefix}.pgm", "success")
-                s.log.emit(f"Saved: {out_prefix}.yaml", "success")
-                s.log.emit(f"Saved: {trav_prefix}.pgm", "success")
-                s.log.emit(f"Saved: {floor_prefix}.pgm", "success")
-                s._killall()
-                s.prog.emit(100)
-                s.done.emit(True, out_prefix)
+            if s.v3_mode:
+                # V3: obstacle map only — no traversability or floor sidecars
+                s.prog.emit(95)
+                if os.path.isfile(out_prefix + ".pgm") and os.path.isfile(out_prefix + ".yaml"):
+                    s.log.emit(f"Saved: {out_prefix}.pgm", "success")
+                    s.log.emit(f"Saved: {out_prefix}.yaml", "success")
+                    s.log.emit("[V3] Traversability/floor sidecars skipped — obstacle map is the base.", "info")
+                    s._killall()
+                    s.prog.emit(100)
+                    s.done.emit(True, out_prefix)
+                else:
+                    s._killall()
+                    s.log.emit("Obstacle map files were not produced.", "warn")
+                    s.done.emit(False, "2D map generation failed")
             else:
-                s._killall()
-                s.log.emit("Map, traversability sidecar, or floor sidecar files were not produced.", "warn")
-                s.done.emit(False, "2D map generation failed")
+                # V1/V2: generate traversability + floor sidecars
+                # Step 2: Traversability sidecar
+                s.prog.emit(70)
+                if not s._run_subprocess(trav_cmd, "Mask"):
+                    if s._c:
+                        return
+                    s._killall()
+                    s.log.emit("Traversability sidecar files were not produced.", "warn")
+                    s.done.emit(False, "2D map generation failed")
+                    return
+                if not os.path.isfile(trav_prefix + ".pgm"):
+                    s._killall()
+                    s.log.emit("Traversability sidecar files were not produced.", "warn")
+                    s.done.emit(False, "2D map generation failed")
+                    return
+
+                # Step 3: Floor sidecar
+                s.prog.emit(90)
+                s._run_subprocess(floor_cmd, "Floor")
+                s.prog.emit(95)
+
+                if (
+                    os.path.isfile(out_prefix + ".pgm") and
+                    os.path.isfile(out_prefix + ".yaml") and
+                    os.path.isfile(trav_prefix + ".pgm") and
+                    os.path.isfile(floor_prefix + ".pgm")
+                ):
+                    s.log.emit(f"Saved: {out_prefix}.pgm", "success")
+                    s.log.emit(f"Saved: {out_prefix}.yaml", "success")
+                    s.log.emit(f"Saved: {trav_prefix}.pgm", "success")
+                    s.log.emit(f"Saved: {floor_prefix}.pgm", "success")
+                    s._killall()
+                    s.prog.emit(100)
+                    s.done.emit(True, out_prefix)
+                else:
+                    s._killall()
+                    s.log.emit("Map, traversability sidecar, or floor sidecar files were not produced.", "warn")
+                    s.done.emit(False, "2D map generation failed")
         except Exception as e:
             s._killall()
             s.log.emit(f"[Map] {e}", "warn")

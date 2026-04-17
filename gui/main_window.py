@@ -116,6 +116,7 @@ class MainWin(QMainWindow):
 
     def __init__(s):
         super().__init__()
+        s._v3_mode = os.environ.get("RII_PIPELINE_VERSION") == "3"
         s.setWindowTitle("Robot Inclusivity Index (RII)")
         _icon_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "icon.png")
         if os.path.isfile(_icon_path):
@@ -1069,8 +1070,21 @@ class MainWin(QMainWindow):
         s.floor_status.setStyleSheet("color:#2563eb;font-size:11px;font-weight:bold;padding:2px")
         l4.addWidget(s.floor_status)
 
-        # Hidden pt_min_z — fixed at 0.05 (floor noise filter, not user-facing)
-        s.oz1 = QDoubleSpinBox(); s.oz1.setValue(0.05); s.oz1.hide()
+        if s._v3_mode:
+            # V3: min_z linked to max_step — obstacles below step height are ignored
+            zh_minz = QHBoxLayout()
+            zh_minz.addWidget(QLabel("Min obstacle height (m):"))
+            s.oz1 = QDoubleSpinBox(); s.oz1.setRange(0.0, 5.0); s.oz1.setValue(0.25); s.oz1.setDecimals(2)
+            s.oz1.setToolTip(
+                "V3: Linked to max_step.\n"
+                "Obstacles shorter than this are ignored (robot climbs over them).\n"
+                "Automatically set when you change max_step below."
+            )
+            zh_minz.addWidget(s.oz1)
+            l4.addLayout(zh_minz)
+        else:
+            # V1/V2: hidden, fixed at 0.05
+            s.oz1 = QDoubleSpinBox(); s.oz1.setValue(0.05); s.oz1.hide()
 
         zh = QHBoxLayout()
         zh.addWidget(QLabel("Obstacle max height (m):"))
@@ -1098,8 +1112,15 @@ class MainWin(QMainWindow):
             "Should match robot's actual step-climbing ability."
         )
         th.addWidget(s.t_step)
+        if s._v3_mode:
+            # V3: link max_step → oz1 (min obstacle height)
+            s.t_step.valueChanged.connect(lambda v: s.oz1.setValue(v))
+            s.oz1.setValue(s.t_step.value())  # sync initial value
         l4.addLayout(th)
-        l4.addWidget(QLabel("Terrain thresholds for traversability: max_slope = steepest ramp, max_step = tallest climbable step."))
+        if s._v3_mode:
+            l4.addWidget(QLabel("V3: max_slope = steepest ramp, max_step = min obstacle height (steps below this are ignored)."))
+        else:
+            l4.addWidget(QLabel("Terrain thresholds for traversability: max_slope = steepest ramp, max_step = tallest climbable step."))
         s.b4 = QPushButton("Generate 2D Map"); s.b4.setStyleSheet(s._B("#aa66ff"))
         s.b4.clicked.connect(s._step4); l4.addWidget(s.b4)
         s.b4save = QPushButton("Save Map (.pgm + .yaml) As..."); s.b4save.setStyleSheet(s._B_secondary())
@@ -1113,6 +1134,13 @@ class MainWin(QMainWindow):
             "Labels show measured angle (ramps) or height (steps)."
         )
         s.b_ground.clicked.connect(s._run_ground_analysis); l4.addWidget(s.b_ground)
+        # Manual slope marking button
+        s.b_mark_slope = QPushButton("Mark Slope Manually"); s.b_mark_slope.setStyleSheet(s._B_secondary())
+        s.b_mark_slope.setToolTip(
+            "Draw a region on the obstacle map and specify its slope angle.\n"
+            "The system will assess if the robot can traverse it."
+        )
+        s.b_mark_slope.clicked.connect(s._mark_slope_manual); l4.addWidget(s.b_mark_slope)
         l4.addWidget(QLabel("The floor is auto-detected. Obstacle max height is relative to the detected floor level."))
         l4.addWidget(QLabel("Outputs are cached in a temporary session folder unless you explicitly save them."))
         g4.setLayout(l4); ll.addWidget(g4)
@@ -1737,7 +1765,10 @@ class MainWin(QMainWindow):
                     "QTabBar::tab{background:#f8f9fa;color:#6b7280;border:1px solid #d1d5db;"
                     "border-radius:5px;padding:4px 12px;margin:2px 2px;font-size:11px}"
                     "QTabBar::tab:selected{background:#dbeafe;color:#2563eb;border-color:#2563eb}")
-        _tab_names = [PRIMARY_SELECTION_VIEW, "Traversable Ground", "3D Viewer", "Reference Coverage", "Actual Coverage", "Compare", "Planner Path", "Semantic", "Vertical Coverage"]
+        if s._v3_mode:
+            _tab_names = [PRIMARY_SELECTION_VIEW, "3D Viewer", "Reference Coverage", "Actual Coverage", "Compare", "Planner Path", "Semantic", "Vertical Coverage"]
+        else:
+            _tab_names = [PRIMARY_SELECTION_VIEW, "Traversable Ground", "3D Viewer", "Reference Coverage", "Actual Coverage", "Compare", "Planner Path", "Semantic", "Vertical Coverage"]
         _tab_tooltips = {
             PRIMARY_SELECTION_VIEW: "2D projection of the raw point cloud.\nBlack = obstacle hit, White = free space.\nUsed as the base map for RII computation and area selection.",
             "Traversable Ground": "Terrain analysis sidecar.\nShows which ground cells pass slope and step-height checks.\nUsed to exclude non-traversable terrain from accessible area.",
@@ -1998,7 +2029,7 @@ class MainWin(QMainWindow):
             f"Generating Step 2 map from the {src_label}: {os.path.basename(p)}",
             "info",
         )
-        w = MapBuildW(p, sd, mz, xz, s.t_slope.value(), s.t_step.value())
+        w = MapBuildW(p, sd, mz, xz, s.t_slope.value(), s.t_step.value(), v3_mode=s._v3_mode)
         w.log.connect(s._log); w.prog.connect(s.prog.setValue)
         def done(ok, msg):
             s.b4.setEnabled(True)
@@ -2147,6 +2178,106 @@ class MainWin(QMainWindow):
                f"{blocked_cells} cells blocked", "success")
         s._log(f"[Ground] View 'Traversable Ground' tab for the clean map", "info")
 
+    # ── Manual Slope Marking ──
+    def _mark_slope_manual(s):
+        """Let user manually mark a slope region on the obstacle map."""
+        from PyQt5.QtWidgets import QInputDialog
+
+        # Check if a selection exists
+        if not s.mw.sel:
+            s._log("First select an area on the obstacle map (Step 3), then click 'Mark Slope'.", "warn")
+            QMessageBox.information(s, "Mark Slope",
+                "1. First click 'Select Area' in Step 3\n"
+                "2. Draw a rectangle over the slope region on the obstacle map\n"
+                "3. Then click 'Mark Slope Manually' again")
+            return
+
+        # Ask for slope angle
+        angle, ok = QInputDialog.getDouble(
+            s, "Mark Slope", "Enter the slope angle (degrees):",
+            value=5.0, min=0.1, max=89.0, decimals=1,
+        )
+        if not ok:
+            return
+
+        # Get selected region pixels
+        sel = s.mw.sel
+        if sel["kind"] == "rect":
+            x1, y1, x2, y2 = sel["rect"]
+        elif sel["kind"] == "freeform":
+            pts = sel["points"]
+            xs = [p[0] for p in pts]
+            ys = [p[1] for p in pts]
+            x1, y1, x2, y2 = min(xs), min(ys), max(xs), max(ys)
+        else:
+            return
+
+        # Convert pixel coords to grid cells for TransitionInfo
+        cells_list = []
+        for py in range(int(y1), int(y2) + 1):
+            for px in range(int(x1), int(x2) + 1):
+                cells_list.append((py, px))
+
+        if not cells_list:
+            return
+
+        from core.ground_analysis import TransitionInfo, GroundAnalysisResult
+        import numpy as np
+
+        cells = np.array(cells_list, dtype=np.int32)
+        traversable = angle <= s.t_slope.value()
+
+        # Get map info for world coordinate conversion
+        pgm = s.e_pgm.text()
+        yaml_path = pgm.replace(".pgm", ".yaml") if pgm else ""
+        if os.path.isfile(yaml_path):
+            yd = parse_yaml(yaml_path)
+            map_res = float(yd["resolution"])
+            map_ox = float(yd["origin"][0])
+            map_oy = float(yd["origin"][1])
+            map_h = s._map_h
+            wx1 = map_ox + x1 * map_res
+            wy1 = map_oy + (map_h - 1 - y1) * map_res
+            wx2 = map_ox + x2 * map_res
+            wy2 = map_oy + (map_h - 1 - y2) * map_res
+        else:
+            wx1, wy1, wx2, wy2 = x1, y1, x2, y2
+
+        t = TransitionInfo(
+            transition_id=0,
+            type="ramp",
+            level_from=0, level_to=0,
+            start_xy=(wx1, wy1),
+            end_xy=(wx2, wy2),
+            angle_deg=angle,
+            width_m=abs(wx2 - wx1),
+            length_m=abs(wy2 - wy1),
+            step_height_m=0.0,
+            height_from=0.0, height_to=0.0,
+            cells=cells,
+            traversable=traversable,
+        )
+
+        # Add to ground result (create if doesn't exist)
+        if not hasattr(s, '_ground_result') or s._ground_result is None:
+            s._ground_result = GroundAnalysisResult(
+                levels=[], transitions=[],
+                cell_size=map_res if os.path.isfile(yaml_path) else 0.05,
+                grid_origin=(map_ox if os.path.isfile(yaml_path) else 0.0,
+                             map_oy if os.path.isfile(yaml_path) else 0.0),
+                grid_shape=(s._map_h, s._map_w),
+            )
+
+        t.transition_id = len(s._ground_result.transitions)
+        s._ground_result.transitions.append(t)
+
+        status = "PASS" if traversable else "FAIL"
+        s._log(f"[Manual] [{status}] Marked slope: {angle:.1f}° "
+               f"({int(x2-x1)}x{int(y2-y1)} px)", "success")
+
+        # Refresh the overlay
+        s._on_ground_result(s._ground_result)
+
     # ── Traversability Map Editing ──
     def _toggle_edit_mode(s, mode):
         """Activate draw/erase editing on the traversable ground map."""
@@ -2267,8 +2398,8 @@ class MainWin(QMainWindow):
         s.lref_note.setText("")
         params = s._get_params('r')
         sel_mask = s._make_sel_mask()
-        trav_sidecar = traversability_sidecar_path(pgm)
-        floor_sidecar = floor_sidecar_path(pgm)
+        trav_sidecar = None if s._v3_mode else traversability_sidecar_path(pgm)
+        floor_sidecar = None if s._v3_mode else floor_sidecar_path(pgm)
         planner = s._use_stc_mode()
         yd = parse_yaml(yml)
         res = yd['resolution']; ox = yd['origin'][0]; oy = yd['origin'][1]
@@ -2332,8 +2463,8 @@ class MainWin(QMainWindow):
         s.lact_note.setText("")
         params = s._get_params('a')
         sel_mask = s._make_sel_mask()
-        trav_sidecar = traversability_sidecar_path(pgm)
-        floor_sidecar = floor_sidecar_path(pgm)
+        trav_sidecar = None if s._v3_mode else traversability_sidecar_path(pgm)
+        floor_sidecar = None if s._v3_mode else floor_sidecar_path(pgm)
         planner = s._use_stc_mode()
 
         # Use picked start point or selection center or map center
