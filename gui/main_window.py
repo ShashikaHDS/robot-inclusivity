@@ -2036,80 +2036,116 @@ class MainWin(QMainWindow):
         w.start()
 
     def _on_ground_result(s, result):
-        """Handle GroundAnalysisResult from the worker — build overlay image."""
+        """Handle GroundAnalysisResult — build traversability map from obstacle map + ramps."""
         s._ground_result = result
 
-        # Build RGBA overlay for the obstacle map
         pgm = s.e_pgm.text()
         if not pgm or not os.path.isfile(pgm):
-            s._log("[Ground] No obstacle map loaded — overlay skipped. Generate a 2D map first.", "warn")
+            s._log("[Ground] No obstacle map loaded. Generate a 2D map first.", "warn")
             return
 
-        map_w, map_h, _ = parse_pgm(pgm)
+        map_w, map_h, pixels = parse_pgm(pgm)
         yaml_path = pgm.replace(".pgm", ".yaml")
         if not os.path.isfile(yaml_path):
-            s._log("[Ground] Map YAML not found — overlay skipped.", "warn")
+            s._log("[Ground] Map YAML not found.", "warn")
             return
         yd = parse_yaml(yaml_path)
         map_res = float(yd["resolution"])
         map_ox = float(yd["origin"][0])
         map_oy = float(yd["origin"][1])
 
-        # Create RGBA overlay
-        rgba = np.zeros((map_h, map_w, 4), dtype=np.uint8)
-        labels = []
+        # ── Step 1: Copy obstacle map as the base traversability map ──
+        trav_pixels = pixels.copy()  # exact copy of obstacle map
+        trav_2d = trav_pixels.reshape(map_h, map_w)
+
+        # ── Step 2: Draw ramps onto the traversability map ──
+        # Non-traversable ramps → mark as blocked (value 0)
+        # Traversable ramps → keep as-is (already free in obstacle map)
         analysis_origin = result.grid_origin
         analysis_cell = result.cell_size
+        blocked_cells = 0
 
         for t in result.transitions:
             if t.cells.shape[0] == 0:
                 continue
-            # Pick color based on traversability
             if t.traversable:
-                color = (0, 200, 80, 160)   # green
-            else:
-                color = (220, 40, 40, 160)   # red
+                continue  # Robot can pass — leave obstacle map as-is
 
-            # Draw transition cells onto the overlay
+            # Block non-traversable ramp cells
             for ci in range(t.cells.shape[0]):
                 row_a, col_a = int(t.cells[ci, 0]), int(t.cells[ci, 1])
                 wx = analysis_origin[0] + (col_a + 0.5) * analysis_cell
                 wy = analysis_origin[1] + (row_a + 0.5) * analysis_cell
                 px = int((wx - map_ox) / map_res)
-                # PGM is stored flipped: py measured from bottom
+                py = map_h - 1 - int((wy - map_oy) / map_res)
+                if 0 <= px < map_w and 0 <= py < map_h:
+                    trav_2d[py, px] = 0
+                    blocked_cells += 1
+
+        # ── Step 3: Save traversability PGM (same location as obstacle map) ──
+        sd = s.e_save.text()
+        trav_pgm = os.path.join(sd, "map_traversable.pgm")
+        trav_yaml = os.path.join(sd, "map_traversable.yaml")
+        # Write PGM
+        with open(trav_pgm, "wb") as f:
+            header = f"P5\n{map_w} {map_h}\n255\n".encode("ascii")
+            f.write(header)
+            f.write(trav_pixels.tobytes())
+        # Copy YAML
+        import shutil
+        shutil.copy2(yaml_path, trav_yaml)
+        s._log(f"[Ground] Traversability map saved: {trav_pgm}", "success")
+
+        # ── Step 4: Show in Traversable Ground tab ──
+        trav_qi = QImage(trav_pixels.data, map_w, map_h, map_w, QImage.Format_Grayscale8)
+        trav_qi._np_ref = trav_pixels
+        s._set_img("Traversable Ground", trav_qi.copy())
+
+        # ── Step 5: Build RGBA overlay for obstacle map view (ramp visualization) ──
+        rgba = np.zeros((map_h, map_w, 4), dtype=np.uint8)
+        labels = []
+
+        for t in result.transitions:
+            if t.cells.shape[0] == 0:
+                continue
+            color = (0, 200, 80, 160) if t.traversable else (220, 40, 40, 160)
+
+            for ci in range(t.cells.shape[0]):
+                row_a, col_a = int(t.cells[ci, 0]), int(t.cells[ci, 1])
+                wx = analysis_origin[0] + (col_a + 0.5) * analysis_cell
+                wy = analysis_origin[1] + (row_a + 0.5) * analysis_cell
+                px = int((wx - map_ox) / map_res)
                 py = map_h - 1 - int((wy - map_oy) / map_res)
                 if 0 <= px < map_w and 0 <= py < map_h:
                     rgba[py, px] = color
-                    # Fill a small area for visibility
                     for dr in range(-1, 2):
                         for dc in range(-1, 2):
                             nr, nc = py + dr, px + dc
                             if 0 <= nr < map_h and 0 <= nc < map_w:
                                 rgba[nr, nc] = color
 
-            # Label at the center of the transition
+            # Label
             cx = analysis_origin[0] + float(np.mean(t.cells[:, 1])) * analysis_cell
             cy = analysis_origin[1] + float(np.mean(t.cells[:, 0])) * analysis_cell
             lpx = (cx - map_ox) / map_res
             lpy = map_h - 1 - (cy - map_oy) / map_res
-            if t.type == "ramp":
-                text = f"{t.angle_deg:.1f}°"
-            else:
-                text = f"step {t.step_height_m:.2f}m"
+            text = f"{t.angle_deg:.1f}°"
             label_color = (0, 220, 80) if t.traversable else (255, 60, 60)
             labels.append((lpx, lpy, text, label_color))
 
         qi = QImage(rgba.data, map_w, map_h, 4 * map_w, QImage.Format_RGBA8888)
-        qi._np_ref = rgba  # prevent GC
+        qi._np_ref = rgba
         s.mw.set_transition_overlay(qi.copy(), labels)
 
-        # Switch to obstacle map view to show overlay
+        # Switch to obstacle map view to show ramp overlay
         s._switch_view(PRIMARY_SELECTION_VIEW)
 
         pass_count = sum(1 for t in result.transitions if t.traversable)
         total = len(result.transitions)
-        s._log(f"[Ground] Overlay: {pass_count}/{total} transitions passable "
-               f"(green=pass, red=blocked)", "success")
+        s._log(f"[Ground] Obstacle map + ramps → traversability map", "success")
+        s._log(f"[Ground] {pass_count}/{total} ramps passable, "
+               f"{blocked_cells} cells blocked", "success")
+        s._log(f"[Ground] View 'Traversable Ground' tab for the clean map", "info")
 
     # ── Traversability Map Editing ──
     def _toggle_edit_mode(s, mode):
