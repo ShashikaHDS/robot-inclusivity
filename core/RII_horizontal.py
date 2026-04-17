@@ -903,18 +903,31 @@ def run_coverage(
         for t in ground_analysis_result.transitions:
             if t.traversable:
                 continue
+            is_manual = getattr(t, '_is_manual', False)
             for ci in range(t.cells.shape[0]):
                 row_a, col_a = int(t.cells[ci, 0]), int(t.cells[ci, 1])
-                wx = analysis_origin[0] + (col_a + 0.5) * analysis_cell
-                wy = analysis_origin[1] + (row_a + 0.5) * analysis_cell
-                px = int((wx - ox) / res)
-                py = int((wy - oy) / res)
-                # blocked array is flipped (row 0 = bottom of map)
-                if 0 <= px < w and 0 <= py < h:
-                    idx = py * w + px
-                    if blocked[idx] == 0:
-                        blocked[idx] = 1
-                        n_blocked_cells += 1
+                if is_manual:
+                    # Manual ramps: cells are PGM pixel coords (row=py_pgm, col=px)
+                    # The blocked array is flipped: row 0 = bottom of world
+                    # PGM pixel (row_a, col_a) maps to flipped row = (h-1-row_a)
+                    fpx = col_a
+                    fpy = h - 1 - row_a
+                    if 0 <= fpx < w and 0 <= fpy < h:
+                        idx = fpy * w + fpx
+                        if blocked[idx] == 0:
+                            blocked[idx] = 1
+                            n_blocked_cells += 1
+                else:
+                    # Auto-detected: convert from analysis grid to map pixels
+                    wx = analysis_origin[0] + (col_a + 0.5) * analysis_cell
+                    wy = analysis_origin[1] + (row_a + 0.5) * analysis_cell
+                    px = int((wx - ox) / res)
+                    py = int((wy - oy) / res)
+                    if 0 <= px < w and 0 <= py < h:
+                        idx = py * w + px
+                        if blocked[idx] == 0:
+                            blocked[idx] = 1
+                            n_blocked_cells += 1
         n_blocked_transitions = sum(
             1 for t in ground_analysis_result.transitions if not t.traversable
         )

@@ -2733,7 +2733,7 @@ class MainWin(QMainWindow):
         s.riif.show()
         s._log(f"★ RII Horizontal = {rii:.1f}%", "gold")
         if s.ref_r and s._results_share_map():
-            bg_cmp = getattr(s, '_trav_pixels', None) or getattr(s, '_pgm_pixels', None)
+            bg_cmp = getattr(s, '_trav_pixels', None) if getattr(s, '_trav_pixels', None) is not None else getattr(s, '_pgm_pixels', None)
             s._set_img("Compare", render_compare_fast(s.ref_r, s.act_r, bg_pgm=bg_cmp))
         elif s.ref_r:
             s._set_img("Compare", make_info_image("Reference and Actual are from different maps.\nRerun both Step 3 evaluations on the current map."))
@@ -3471,7 +3471,7 @@ class MainWin(QMainWindow):
     def _render_bottleneck_view(s, focused_id=None):
         if not s.act_r or not s._sem_candidates:
             return
-        bg = getattr(s, '_trav_pixels', None) or getattr(s, '_pgm_pixels', None)
+        bg = getattr(s, '_trav_pixels', None) if getattr(s, '_trav_pixels', None) is not None else getattr(s, '_pgm_pixels', None)
         qi = render_bottleneck_overlay(s.act_r, s._sem_candidates, bg_pgm=bg, focused_id=focused_id)
         s._set_img("Bottleneck", qi)
 
@@ -3520,7 +3520,7 @@ class MainWin(QMainWindow):
         )
 
         # Render optimization overlay on map
-        bg = getattr(s, '_trav_pixels', None) or getattr(s, '_pgm_pixels', None)
+        bg = getattr(s, '_trav_pixels', None) if getattr(s, '_trav_pixels', None) is not None else getattr(s, '_pgm_pixels', None)
         qi = render_optimization_overlay(s.act_r, result, bg_pgm=bg)
         s._set_img("Optimization", qi)
         s._switch_view("Optimization")
