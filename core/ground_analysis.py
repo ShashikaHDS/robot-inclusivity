@@ -421,6 +421,168 @@ def detect_ramps_by_slope(
     )
 
 
+# ── Cross-Section Angle Refinement ─────────────────────────────────────────────
+
+def _refine_angle_cross_section(
+    points: np.ndarray,
+    transition: TransitionInfo,
+    cell_size: float,
+    origin: Tuple[float, float],
+    strip_width: float = 0.5,
+    bin_size: float = 0.15,
+    margin_m: float = 2.0,
+) -> float:
+    """Refine a ramp's angle using cross-section profiles through the ramp region.
+
+    Takes 1D cross-sections along the ramp's principal direction (from PCA),
+    fits a linear segment, and returns the measured slope angle.
+    This is more accurate than per-cell median slope because it measures
+    the actual height change over distance in 1D, averaging out noise.
+
+    Returns the refined angle in degrees, or the original if refinement fails.
+    """
+    min_x, min_y = origin
+    cells = transition.cells
+    rows, cols = cells[:, 0], cells[:, 1]
+
+    # World coordinates of ramp cells
+    wx = cols.astype(np.float32) * cell_size + min_x + cell_size * 0.5
+    wy = rows.astype(np.float32) * cell_size + min_y + cell_size * 0.5
+
+    # Ramp bounding box with margin
+    ramp_x_min = float(wx.min()) - margin_m
+    ramp_x_max = float(wx.max()) + margin_m
+    ramp_y_min = float(wy.min()) - margin_m
+    ramp_y_max = float(wy.max()) + margin_m
+
+    # Extract points within the ramp bounding box
+    mask = (
+        (points[:, 0] >= ramp_x_min) & (points[:, 0] <= ramp_x_max) &
+        (points[:, 1] >= ramp_y_min) & (points[:, 1] <= ramp_y_max)
+    )
+    local_pts = points[mask]
+    if local_pts.shape[0] < 20:
+        return transition.angle_deg
+
+    # Compute ramp principal direction from start→end
+    dx = transition.end_xy[0] - transition.start_xy[0]
+    dy = transition.end_xy[1] - transition.start_xy[1]
+    ramp_length = math.sqrt(dx * dx + dy * dy)
+    if ramp_length < 0.1:
+        return transition.angle_deg
+    dir_x = dx / ramp_length
+    dir_y = dy / ramp_length
+
+    # Ramp center
+    cx = (transition.start_xy[0] + transition.end_xy[0]) * 0.5
+    cy = (transition.start_xy[1] + transition.end_xy[1]) * 0.5
+
+    # Project local points onto ramp direction (along) and perpendicular (across)
+    rel_x = local_pts[:, 0] - cx
+    rel_y = local_pts[:, 1] - cy
+    along = rel_x * dir_x + rel_y * dir_y      # distance along ramp
+    across = -rel_x * dir_y + rel_y * dir_x    # distance perpendicular to ramp
+    z = local_pts[:, 2]
+
+    # Take multiple strips across the ramp width
+    across_min = float(across.min())
+    across_max = float(across.max())
+    n_strips = max(1, int((across_max - across_min) / strip_width))
+
+    fitted_angles = []
+
+    for si in range(n_strips):
+        strip_lo = across_min + si * strip_width
+        strip_hi = strip_lo + strip_width
+        strip_mask = (across >= strip_lo) & (across < strip_hi)
+        if strip_mask.sum() < 10:
+            continue
+
+        s_along = along[strip_mask]
+        s_z = z[strip_mask]
+
+        # Bin along the ramp direction
+        a_min = float(s_along.min())
+        a_max = float(s_along.max())
+        n_bins = max(1, int((a_max - a_min) / bin_size))
+
+        bin_x = []
+        bin_z = []
+        for bi in range(n_bins):
+            blo = a_min + bi * bin_size
+            bhi = blo + bin_size
+            bm = (s_along >= blo) & (s_along < bhi)
+            if bm.sum() >= 3:
+                bin_x.append(blo + bin_size * 0.5)
+                bin_z.append(float(np.percentile(s_z[bm], 10)))
+
+        if len(bin_x) < 4:
+            continue
+
+        bx = np.array(bin_x, dtype=np.float32)
+        bz = np.array(bin_z, dtype=np.float32)
+
+        # Linear fit: z = a * x + b
+        n = len(bx)
+        mx = float(bx.mean())
+        mz = float(bz.mean())
+        ss_xx = float(((bx - mx) ** 2).sum())
+        ss_xz = float(((bx - mx) * (bz - mz)).sum())
+        ss_zz = float(((bz - mz) ** 2).sum())
+
+        if ss_xx < 1e-12:
+            continue
+
+        a = ss_xz / ss_xx
+        ss_res = ss_zz - a * ss_xz
+        r2 = max(0.0, 1.0 - ss_res / ss_zz) if ss_zz > 1e-12 else 0.0
+
+        # Only accept fits with decent R² (the profile should be roughly linear)
+        if r2 >= 0.5:
+            angle = math.degrees(math.atan(abs(a)))
+            fitted_angles.append(angle)
+
+    if not fitted_angles:
+        return transition.angle_deg
+
+    # Return median of fitted angles across strips
+    return float(np.median(fitted_angles))
+
+
+def refine_with_cross_sections(
+    points: np.ndarray,
+    result: GroundAnalysisResult,
+    log: callable = None,
+) -> GroundAnalysisResult:
+    """Refine all ramp angles using cross-section profiles.
+
+    For each detected ramp region, takes 1D cross-sections along the ramp
+    direction and fits linear segments to get a precise angle measurement.
+    """
+    if log is None:
+        log = lambda m, l="info": None
+
+    # Filter points to floor band for cross-section analysis
+    pts = np.asarray(points, dtype=np.float32)
+    pts = pts[np.isfinite(pts).all(axis=1)]
+    floor_anchor = float(np.percentile(pts[:, 2], 5.0))
+    z_mask = (pts[:, 2] >= floor_anchor) & (pts[:, 2] <= floor_anchor + 1.0)
+    ground_pts = pts[z_mask]
+
+    for t in result.transitions:
+        old_angle = t.angle_deg
+        new_angle = _refine_angle_cross_section(
+            ground_pts, t,
+            cell_size=result.cell_size,
+            origin=result.grid_origin,
+        )
+        t.angle_deg = new_angle
+        if abs(new_angle - old_angle) > 0.5:
+            log(f"[Hybrid] Ramp #{t.transition_id}: {old_angle:.1f}° → {new_angle:.1f}° (cross-section refined)", "info")
+
+    return result
+
+
 # ── Accessibility Assessment ──────────────────────────────────────────────────
 
 def assess_transitions(
@@ -514,7 +676,7 @@ def run_ground_analysis(
     if log is None:
         log = lambda msg, lvl="info": None
 
-    log("[Ramp] Starting slope-based ramp detection...", "info")
+    log("[Hybrid] Step 1: Slope grid — locating ramp regions...", "info")
 
     result = detect_ramps_by_slope(
         points,
@@ -523,11 +685,14 @@ def run_ground_analysis(
         log=log,
     )
 
-    log(f"[Ramp] Assessing accessibility (max_slope={max_slope_deg}°)...", "info")
+    log(f"[Hybrid] Step 2: Cross-section — refining angles for {len(result.transitions)} ramps...", "info")
+    result = refine_with_cross_sections(points, result, log=log)
+
+    log(f"[Hybrid] Step 3: Assessing accessibility (max_slope={max_slope_deg}°)...", "info")
     result = assess_transitions(result, max_slope_deg=max_slope_deg, max_step_m=max_step_m)
 
     for t in result.transitions:
         status = "PASS" if t.traversable else "FAIL"
-        log(f"[Ramp]   [{status}] {t.angle_deg:.1f}° ramp, {t.length_m:.1f}m x {t.width_m:.1f}m", "info")
+        log(f"[Hybrid]   [{status}] {t.angle_deg:.1f}° ramp, {t.length_m:.1f}m x {t.width_m:.1f}m", "info")
 
     return result
