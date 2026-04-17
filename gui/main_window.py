@@ -1134,20 +1134,34 @@ class MainWin(QMainWindow):
             "Labels show measured angle (ramps) or height (steps)."
         )
         s.b_ground.clicked.connect(s._run_ground_analysis); l4.addWidget(s.b_ground)
-        # Manual slope marking button
-        s.b_mark_slope = QPushButton("Mark Slope Manually"); s.b_mark_slope.setStyleSheet(s._B_secondary())
-        s.b_mark_slope.setToolTip(
-            "Draw a region on the obstacle map and specify its slope angle.\n"
-            "The system will assess if the robot can traverse it."
-        )
-        s.b_mark_slope.clicked.connect(s._mark_slope_manual); l4.addWidget(s.b_mark_slope)
+        # Manual slope marking — separate select + confirm buttons
+        ramp_row = QHBoxLayout()
+        s.b_select_ramp = QPushButton("Select Ramp Area"); s.b_select_ramp.setStyleSheet(s._B_secondary())
+        s.b_select_ramp.setToolTip("Draw a rectangle on the obstacle map to mark a ramp region.")
+        s.b_select_ramp.clicked.connect(s._start_ramp_selection)
+        ramp_row.addWidget(s.b_select_ramp)
+        s.b_mark_slope = QPushButton("Confirm Ramp"); s.b_mark_slope.setStyleSheet(s._B("#059669"))
+        s.b_mark_slope.setToolTip("Confirm the selected region as a ramp and enter its slope angle.")
+        s.b_mark_slope.clicked.connect(s._mark_slope_manual)
+        ramp_row.addWidget(s.b_mark_slope)
+        s.b_toggle_ramps = QPushButton("Show/Hide Ramps"); s.b_toggle_ramps.setCheckable(True); s.b_toggle_ramps.setChecked(True)
+        s.b_toggle_ramps.setStyleSheet(
+            "QPushButton{background:#f8f9fa;color:#6b7280;border:1px solid #d1d5db;border-radius:4px;padding:4px 10px}"
+            "QPushButton:checked{background:#dbeafe;color:#2563eb;border-color:#2563eb}")
+        s.b_toggle_ramps.setToolTip("Toggle ramp overlay visibility on the obstacle map.")
+        s.b_toggle_ramps.toggled.connect(s._toggle_ramp_visibility)
+        ramp_row.addWidget(s.b_toggle_ramps)
+        l4.addLayout(ramp_row)
         l4.addWidget(QLabel("The floor is auto-detected. Obstacle max height is relative to the detected floor level."))
         l4.addWidget(QLabel("Outputs are cached in a temporary session folder unless you explicitly save them."))
         g4.setLayout(l4); ll.addWidget(g4)
 
-        # ── Edit Traversable Ground ──
-        g_edit = QGroupBox("Edit Traversable Ground"); l_edit = QVBoxLayout(); l_edit.setSpacing(6)
-        l_edit.addWidget(QLabel("Draw or erase on the traversable ground map. Apply to save changes for RII computation."))
+        # ── Edit Map ──
+        edit_title = "Edit Obstacle Map" if s._v3_mode else "Edit Traversable Ground"
+        edit_desc = ("Draw or erase on the obstacle map. Apply to save changes." if s._v3_mode
+                     else "Draw or erase on the traversable ground map. Apply to save changes for RII computation.")
+        g_edit = QGroupBox(edit_title); l_edit = QVBoxLayout(); l_edit.setSpacing(6)
+        l_edit.addWidget(QLabel(edit_desc))
         edit_row1 = QHBoxLayout()
         s.btn_edit_draw = QPushButton("Draw"); s.btn_edit_draw.setCheckable(True)
         s.btn_edit_draw.setStyleSheet("QPushButton{background:#ffffff;color:#6b7280;border:1px solid #d1d5db;border-radius:4px;padding:4px 10px}"
@@ -1191,7 +1205,7 @@ class MainWin(QMainWindow):
         l_edit.addWidget(s.edit_ref_overlay)
 
         edit_row3 = QHBoxLayout()
-        s.btn_edit_apply = QPushButton("Apply to Traversability Map")
+        s.btn_edit_apply = QPushButton("Apply to Obstacle Map" if s._v3_mode else "Apply to Traversability Map")
         s.btn_edit_apply.setStyleSheet(s._B())
         s.btn_edit_apply.clicked.connect(s._apply_trav_edit)
         s.btn_edit_revert = QPushButton("Revert")
@@ -2178,18 +2192,38 @@ class MainWin(QMainWindow):
                f"{blocked_cells} cells blocked", "success")
         s._log(f"[Ground] View 'Traversable Ground' tab for the clean map", "info")
 
+    # ── Ramp Selection & Visibility ──
+    def _start_ramp_selection(s):
+        """Enable rectangle selection on the obstacle map for ramp marking."""
+        p, _ = s._get_pgm()
+        if not p:
+            QMessageBox.warning(s, "Error", "Generate a 2D map first (Step 2).")
+            return
+        if BLOCKED_MAP_VIEW not in s._imgs:
+            s._load_map(p)
+        s._switch_view(PRIMARY_SELECTION_VIEW)
+        s.mw.clear_sel()
+        s.mw.enable_sel("rectangle")
+        s._log("Draw a rectangle over the ramp area on the obstacle map, then click 'Confirm Ramp'.", "gold")
+
+    def _toggle_ramp_visibility(s, visible):
+        """Show or hide the ramp overlay on the obstacle map."""
+        if visible:
+            if hasattr(s, '_ground_result') and s._ground_result is not None:
+                s._on_ground_result(s._ground_result)
+            else:
+                s._log("No ramps detected yet.", "info")
+        else:
+            s.mw.clear_transition_overlay()
+
     # ── Manual Slope Marking ──
     def _mark_slope_manual(s):
-        """Let user manually mark a slope region on the obstacle map."""
+        """Confirm the selected ramp region and enter slope angle."""
         from PyQt5.QtWidgets import QInputDialog
 
         # Check if a selection exists
         if not s.mw.sel:
-            s._log("First select an area on the obstacle map (Step 3), then click 'Mark Slope'.", "warn")
-            QMessageBox.information(s, "Mark Slope",
-                "1. First click 'Select Area' in Step 3\n"
-                "2. Draw a rectangle over the slope region on the obstacle map\n"
-                "3. Then click 'Mark Slope Manually' again")
+            s._log("First click 'Select Ramp Area' and draw a rectangle, then click 'Confirm Ramp'.", "warn")
             return
 
         # Ask for slope angle
@@ -2280,29 +2314,42 @@ class MainWin(QMainWindow):
 
     # ── Traversability Map Editing ──
     def _toggle_edit_mode(s, mode):
-        """Activate draw/erase editing on the traversable ground map."""
+        """Activate draw/erase editing on the map."""
         pgm = s.e_pgm.text()
         if not pgm:
             pgm = os.path.join(s.e_save.text(), "map.pgm")
-        trav_path = traversability_sidecar_path(pgm)
-        if not os.path.isfile(trav_path):
-            QMessageBox.warning(s, "No Traversability Map",
-                                "Generate a 2D map first (Step 2) to create a traversability sidecar.")
-            s.btn_edit_draw.setChecked(False)
-            s.btn_edit_erase.setChecked(False)
-            return
-        # Switch to Traversable Ground view
-        s._switch_view("Traversable Ground")
-        # Load traversability PGM as overlay if not already editing
-        if not s.mw._edit_active:
-            w, h, pixels = parse_pgm(trav_path)
-            overlay = pixels.reshape(h, w)
-            s.mw.enable_edit(overlay)
-            # Set obstacle map as reference overlay for comparison
-            if BLOCKED_MAP_VIEW in s._imgs:
-                s.mw.set_reference_overlay(s._imgs[BLOCKED_MAP_VIEW])
-            s._log("Edit mode enabled — draw or erase on the traversable ground map.", "info")
-        # Set draw/erase mode
+
+        if s._v3_mode:
+            # V3: edit the obstacle map directly
+            if not os.path.isfile(pgm):
+                QMessageBox.warning(s, "No Map", "Generate a 2D map first (Step 2).")
+                s.btn_edit_draw.setChecked(False)
+                s.btn_edit_erase.setChecked(False)
+                return
+            s._switch_view(PRIMARY_SELECTION_VIEW)
+            if not s.mw._edit_active:
+                w, h, pixels = parse_pgm(pgm)
+                overlay = pixels.reshape(h, w)
+                s.mw.enable_edit(overlay)
+                s._log("Edit mode enabled — draw or erase on the obstacle map.", "info")
+        else:
+            # V1/V2: edit traversability sidecar
+            trav_path = traversability_sidecar_path(pgm)
+            if not os.path.isfile(trav_path):
+                QMessageBox.warning(s, "No Traversability Map",
+                                    "Generate a 2D map first (Step 2) to create a traversability sidecar.")
+                s.btn_edit_draw.setChecked(False)
+                s.btn_edit_erase.setChecked(False)
+                return
+            s._switch_view("Traversable Ground")
+            if not s.mw._edit_active:
+                w, h, pixels = parse_pgm(trav_path)
+                overlay = pixels.reshape(h, w)
+                s.mw.enable_edit(overlay)
+                if BLOCKED_MAP_VIEW in s._imgs:
+                    s.mw.set_reference_overlay(s._imgs[BLOCKED_MAP_VIEW])
+                s._log("Edit mode enabled — draw or erase on the traversable ground map.", "info")
+
         s.mw.set_edit_mode(mode)
         s.btn_edit_draw.setChecked(mode == "draw")
         s.btn_edit_erase.setChecked(mode == "erase")
@@ -2345,32 +2392,47 @@ class MainWin(QMainWindow):
         s.edit_brush_size.setVisible(not is_rect)
 
     def _apply_trav_edit(s):
-        """Write the edited overlay back to the traversability PGM file."""
+        """Write the edited overlay back to the map PGM file."""
         if not s.mw._edit_active or s.mw._edit_overlay is None:
             QMessageBox.information(s, "Nothing to Apply", "Enable edit mode first (Draw or Erase).")
             return
         pgm = s.e_pgm.text()
         if not pgm:
             pgm = os.path.join(s.e_save.text(), "map.pgm")
-        trav_path = traversability_sidecar_path(pgm)
+
         overlay = s.mw.get_edit_overlay()
         h, w = overlay.shape
-        # Write as PGM P5
-        with open(trav_path, 'wb') as f:
-            f.write(f"P5\n{w} {h}\n255\n".encode("ascii"))
-            f.write(overlay.tobytes())
-        s._log(f"Traversability map saved: {trav_path}", "success")
-        # Disable edit mode and clear reference overlay
-        s.mw.disable_edit()
-        s.mw.set_reference_overlay(None)
-        s.mw.set_reference_overlay_visible(False)
-        s.btn_edit_draw.setChecked(False)
-        s.btn_edit_erase.setChecked(False)
-        if hasattr(s, 'edit_ref_overlay'):
-            s.edit_ref_overlay.setChecked(False)
-        # Reload sidecar images so the view reflects the saved state
-        s._load_map_sidecars(pgm)
-        s._switch_view("Traversable Ground")
+
+        if s._v3_mode:
+            # V3: save directly to the obstacle map
+            save_path = pgm
+            with open(save_path, 'wb') as f:
+                f.write(f"P5\n{w} {h}\n255\n".encode("ascii"))
+                f.write(overlay.tobytes())
+            s._log(f"Obstacle map saved: {save_path}", "success")
+            s.mw.disable_edit()
+            s.btn_edit_draw.setChecked(False)
+            s.btn_edit_erase.setChecked(False)
+            # Reload the map
+            if os.path.isfile(pgm):
+                s._load_map(pgm)
+            s._switch_view(PRIMARY_SELECTION_VIEW)
+        else:
+            # V1/V2: save to traversability sidecar
+            trav_path = traversability_sidecar_path(pgm)
+            with open(trav_path, 'wb') as f:
+                f.write(f"P5\n{w} {h}\n255\n".encode("ascii"))
+                f.write(overlay.tobytes())
+            s._log(f"Traversability map saved: {trav_path}", "success")
+            s.mw.disable_edit()
+            s.mw.set_reference_overlay(None)
+            s.mw.set_reference_overlay_visible(False)
+            s.btn_edit_draw.setChecked(False)
+            s.btn_edit_erase.setChecked(False)
+            if hasattr(s, 'edit_ref_overlay'):
+                s.edit_ref_overlay.setChecked(False)
+            s._load_map_sidecars(pgm)
+            s._switch_view("Traversable Ground")
 
     def _revert_trav_edit(s):
         """Discard edits and reload the original traversability PGM from disk."""
