@@ -1134,24 +1134,45 @@ class MainWin(QMainWindow):
             "Labels show measured angle (ramps) or height (steps)."
         )
         s.b_ground.clicked.connect(s._run_ground_analysis); l4.addWidget(s.b_ground)
-        # Manual slope marking — separate select + confirm buttons
-        ramp_row = QHBoxLayout()
+        # ── Ramp Management ──
+        ramp_row1 = QHBoxLayout()
         s.b_select_ramp = QPushButton("Select Ramp Area"); s.b_select_ramp.setStyleSheet(s._B_secondary())
         s.b_select_ramp.setToolTip("Draw a rectangle on the obstacle map to mark a ramp region.")
         s.b_select_ramp.clicked.connect(s._start_ramp_selection)
-        ramp_row.addWidget(s.b_select_ramp)
-        s.b_mark_slope = QPushButton("Confirm Ramp"); s.b_mark_slope.setStyleSheet(s._B("#059669"))
-        s.b_mark_slope.setToolTip("Confirm the selected region as a ramp and enter its slope angle.")
+        ramp_row1.addWidget(s.b_select_ramp)
+        s.b_mark_slope = QPushButton("Add Ramp"); s.b_mark_slope.setStyleSheet(s._B("#059669"))
+        s.b_mark_slope.setToolTip("Add the selected area as a ramp — enter its slope angle.")
         s.b_mark_slope.clicked.connect(s._mark_slope_manual)
-        ramp_row.addWidget(s.b_mark_slope)
+        ramp_row1.addWidget(s.b_mark_slope)
+        s.b_remove_ramp = QPushButton("Remove Last"); s.b_remove_ramp.setStyleSheet(s._B_danger())
+        s.b_remove_ramp.setToolTip("Remove the last manually added ramp.")
+        s.b_remove_ramp.clicked.connect(s._remove_last_manual_ramp)
+        ramp_row1.addWidget(s.b_remove_ramp)
+        l4.addLayout(ramp_row1)
+
+        # Ramp list display
+        s.ramp_list = QListWidget()
+        s.ramp_list.setMaximumHeight(80)
+        s.ramp_list.setStyleSheet("QListWidget{font-size:11px;border:1px solid #d1d5db;border-radius:4px}")
+        l4.addWidget(s.ramp_list)
+
+        ramp_row2 = QHBoxLayout()
         s.b_toggle_ramps = QPushButton("Show/Hide Ramps"); s.b_toggle_ramps.setCheckable(True); s.b_toggle_ramps.setChecked(True)
         s.b_toggle_ramps.setStyleSheet(
             "QPushButton{background:#f8f9fa;color:#6b7280;border:1px solid #d1d5db;border-radius:4px;padding:4px 10px}"
             "QPushButton:checked{background:#dbeafe;color:#2563eb;border-color:#2563eb}")
-        s.b_toggle_ramps.setToolTip("Toggle ramp overlay visibility on the obstacle map.")
+        s.b_toggle_ramps.setToolTip("Toggle ramp overlay visibility.")
         s.b_toggle_ramps.toggled.connect(s._toggle_ramp_visibility)
-        ramp_row.addWidget(s.b_toggle_ramps)
-        l4.addLayout(ramp_row)
+        ramp_row2.addWidget(s.b_toggle_ramps)
+        s.b_manual_only = QPushButton("Manual Ramps Only"); s.b_manual_only.setCheckable(True)
+        s.b_manual_only.setStyleSheet(s.b_toggle_ramps.styleSheet())
+        s.b_manual_only.setToolTip("Show only manually marked ramps. Disable all auto-detected ramps.")
+        s.b_manual_only.toggled.connect(s._toggle_manual_only)
+        ramp_row2.addWidget(s.b_manual_only)
+        l4.addLayout(ramp_row2)
+
+        # Track manual ramps separately
+        s._manual_ramps = []
         l4.addWidget(QLabel("The floor is auto-detected. Obstacle max height is relative to the detected floor level."))
         l4.addWidget(QLabel("Outputs are cached in a temporary session folder unless you explicitly save them."))
         g4.setLayout(l4); ll.addWidget(g4)
@@ -2204,37 +2225,74 @@ class MainWin(QMainWindow):
         s._switch_view(PRIMARY_SELECTION_VIEW)
         s.mw.clear_sel()
         s.mw.enable_sel("rectangle")
-        s._log("Draw a rectangle over the ramp area on the obstacle map, then click 'Confirm Ramp'.", "gold")
+        s._log("Draw a rectangle over the ramp area, then click 'Add Ramp'.", "gold")
 
     def _toggle_ramp_visibility(s, visible):
         """Show or hide the ramp overlay on the obstacle map."""
         if visible:
-            if hasattr(s, '_ground_result') and s._ground_result is not None:
-                s._on_ground_result(s._ground_result)
-            else:
-                s._log("No ramps detected yet.", "info")
+            s._refresh_ramp_overlay()
         else:
             s.mw.clear_transition_overlay()
 
+    def _toggle_manual_only(s, checked):
+        """Toggle between showing all ramps vs only manual ramps."""
+        if checked:
+            s._log("[Ramps] Showing only manually marked ramps.", "info")
+        else:
+            s._log("[Ramps] Showing all ramps (auto + manual).", "info")
+        if s.b_toggle_ramps.isChecked():
+            s._refresh_ramp_overlay()
+
+    def _refresh_ramp_overlay(s):
+        """Rebuild and display the ramp overlay based on current settings."""
+        from core.ground_analysis import GroundAnalysisResult
+        if s.b_manual_only.isChecked():
+            # Show only manual ramps
+            if not s._manual_ramps:
+                s.mw.clear_transition_overlay()
+                return
+            manual_result = GroundAnalysisResult(
+                levels=[], transitions=list(s._manual_ramps),
+                cell_size=0.05, grid_origin=(0.0, 0.0), grid_shape=(s._map_h, s._map_w),
+            )
+            s._on_ground_result(manual_result)
+        else:
+            # Show all (auto + manual)
+            if hasattr(s, '_ground_result') and s._ground_result is not None:
+                s._on_ground_result(s._ground_result)
+            elif s._manual_ramps:
+                manual_result = GroundAnalysisResult(
+                    levels=[], transitions=list(s._manual_ramps),
+                    cell_size=0.05, grid_origin=(0.0, 0.0), grid_shape=(s._map_h, s._map_w),
+                )
+                s._on_ground_result(manual_result)
+
+    def _update_ramp_list(s):
+        """Update the ramp list widget."""
+        s.ramp_list.clear()
+        for i, t in enumerate(s._manual_ramps):
+            status = "PASS" if t.traversable else "FAIL"
+            item = QListWidgetItem(f"Ramp {i+1}: {t.angle_deg:.1f}° [{status}] "
+                                   f"({int(abs(t.end_xy[0]-t.start_xy[0])/0.05)}x"
+                                   f"{int(abs(t.end_xy[1]-t.start_xy[1])/0.05)} px)")
+            s.ramp_list.addItem(item)
+
     # ── Manual Slope Marking ──
     def _mark_slope_manual(s):
-        """Confirm the selected ramp region and enter slope angle."""
+        """Add the selected area as a ramp with user-specified angle."""
         from PyQt5.QtWidgets import QInputDialog
 
-        # Check if a selection exists
         if not s.mw.sel:
-            s._log("First click 'Select Ramp Area' and draw a rectangle, then click 'Confirm Ramp'.", "warn")
+            s._log("First click 'Select Ramp Area' and draw a rectangle, then click 'Add Ramp'.", "warn")
             return
 
-        # Ask for slope angle
         angle, ok = QInputDialog.getDouble(
-            s, "Mark Slope", "Enter the slope angle (degrees):",
+            s, "Add Ramp", "Enter the slope angle (degrees):",
             value=5.0, min=0.1, max=89.0, decimals=1,
         )
         if not ok:
             return
 
-        # Get selected region pixels
         sel = s.mw.sel
         if sel["kind"] == "rect":
             x1, y1, x2, y2 = sel["rect"]
@@ -2246,39 +2304,35 @@ class MainWin(QMainWindow):
         else:
             return
 
-        # Convert pixel coords to grid cells for TransitionInfo
         cells_list = []
         for py in range(int(y1), int(y2) + 1):
             for px in range(int(x1), int(x2) + 1):
                 cells_list.append((py, px))
-
         if not cells_list:
             return
 
         from core.ground_analysis import TransitionInfo, GroundAnalysisResult
-        import numpy as np
 
         cells = np.array(cells_list, dtype=np.int32)
         traversable = angle <= s.t_slope.value()
 
-        # Get map info for world coordinate conversion
         pgm = s.e_pgm.text()
         yaml_path = pgm.replace(".pgm", ".yaml") if pgm else ""
+        map_res = 0.05
+        map_ox = map_oy = 0.0
         if os.path.isfile(yaml_path):
             yd = parse_yaml(yaml_path)
             map_res = float(yd["resolution"])
             map_ox = float(yd["origin"][0])
             map_oy = float(yd["origin"][1])
-            map_h = s._map_h
-            wx1 = map_ox + x1 * map_res
-            wy1 = map_oy + (map_h - 1 - y1) * map_res
-            wx2 = map_ox + x2 * map_res
-            wy2 = map_oy + (map_h - 1 - y2) * map_res
-        else:
-            wx1, wy1, wx2, wy2 = x1, y1, x2, y2
+        map_h = s._map_h
+        wx1 = map_ox + x1 * map_res
+        wy1 = map_oy + (map_h - 1 - y1) * map_res
+        wx2 = map_ox + x2 * map_res
+        wy2 = map_oy + (map_h - 1 - y2) * map_res
 
         t = TransitionInfo(
-            transition_id=0,
+            transition_id=len(s._manual_ramps),
             type="ramp",
             level_from=0, level_to=0,
             start_xy=(wx1, wy1),
@@ -2292,25 +2346,46 @@ class MainWin(QMainWindow):
             traversable=traversable,
         )
 
-        # Add to ground result (create if doesn't exist)
+        s._manual_ramps.append(t)
+
+        # Also add to ground_result for RII integration
         if not hasattr(s, '_ground_result') or s._ground_result is None:
             s._ground_result = GroundAnalysisResult(
                 levels=[], transitions=[],
-                cell_size=map_res if os.path.isfile(yaml_path) else 0.05,
-                grid_origin=(map_ox if os.path.isfile(yaml_path) else 0.0,
-                             map_oy if os.path.isfile(yaml_path) else 0.0),
+                cell_size=map_res,
+                grid_origin=(map_ox, map_oy),
                 grid_shape=(s._map_h, s._map_w),
             )
-
         t.transition_id = len(s._ground_result.transitions)
         s._ground_result.transitions.append(t)
 
         status = "PASS" if traversable else "FAIL"
-        s._log(f"[Manual] [{status}] Marked slope: {angle:.1f}° "
+        s._log(f"[Manual] [{status}] Added ramp {len(s._manual_ramps)}: {angle:.1f}° "
                f"({int(x2-x1)}x{int(y2-y1)} px)", "success")
 
-        # Refresh the overlay
-        s._on_ground_result(s._ground_result)
+        s._update_ramp_list()
+        s.mw.clear_sel()
+
+        # Refresh overlay
+        if s.b_toggle_ramps.isChecked():
+            s._refresh_ramp_overlay()
+
+    def _remove_last_manual_ramp(s):
+        """Remove the last manually added ramp."""
+        if not s._manual_ramps:
+            s._log("No manual ramps to remove.", "info")
+            return
+        removed = s._manual_ramps.pop()
+        # Also remove from ground_result if it's there
+        if hasattr(s, '_ground_result') and s._ground_result is not None:
+            s._ground_result.transitions = [
+                t for t in s._ground_result.transitions
+                if not (t.type == "ramp" and t.start_xy == removed.start_xy and t.end_xy == removed.end_xy)
+            ]
+        s._log(f"[Manual] Removed ramp: {removed.angle_deg:.1f}°", "info")
+        s._update_ramp_list()
+        if s.b_toggle_ramps.isChecked():
+            s._refresh_ramp_overlay()
 
     # ── Traversability Map Editing ──
     def _toggle_edit_mode(s, mode):
