@@ -1060,6 +1060,27 @@ class MainWin(QMainWindow):
         l1.addLayout(h1)
         s.b1 = QPushButton("View Raw Point Cloud"); s.b1.setStyleSheet(s._B())
         s.b1.clicked.connect(s._step1); l1.addWidget(s.b1)
+        # Noise filter
+        filter_row = QHBoxLayout()
+        s.cb_noise_filter = QCheckBox("Apply noise filter (SOR)")
+        s.cb_noise_filter.setToolTip(
+            "Statistical Outlier Removal — removes scattered noise points.\n"
+            "Points with few neighbors are removed before map generation.\n"
+            "Enable this if your map has scattered false obstacles."
+        )
+        filter_row.addWidget(s.cb_noise_filter)
+        filter_row.addWidget(QLabel("Neighbors:"))
+        s.sor_k = QSpinBox(); s.sor_k.setRange(3, 50); s.sor_k.setValue(10)
+        s.sor_k.setToolTip("Number of neighbors to consider for SOR.\nHigher = more aggressive filtering.")
+        filter_row.addWidget(s.sor_k)
+        filter_row.addWidget(QLabel("Std:"))
+        s.sor_std = QDoubleSpinBox(); s.sor_std.setRange(0.5, 5.0); s.sor_std.setValue(1.5); s.sor_std.setDecimals(1)
+        s.sor_std.setToolTip("Standard deviation threshold.\nLower = more aggressive (removes more points).\n1.0-1.5 = typical.")
+        filter_row.addWidget(s.sor_std)
+        s.filter_status = QLabel("")
+        s.filter_status.setStyleSheet("color:#059669;font-size:11px")
+        filter_row.addWidget(s.filter_status, 1)
+        l1.addLayout(filter_row)
         g1.setLayout(l1); ll.addWidget(g1)
 
         # Step 2
@@ -2096,6 +2117,32 @@ class MainWin(QMainWindow):
             )
         except Exception:
             s.floor_status.setText("")
+
+        # Apply noise filter if enabled
+        if s.cb_noise_filter.isChecked():
+            s._log("[Filter] Applying Statistical Outlier Removal...", "info")
+            try:
+                from src.pcd_package.pcd_package.pcd_tools import (
+                    load_xyz_points as _load_pts, approximate_density_filter, write_xyz_pcd,
+                )
+                raw_pts = _load_pts(p)
+                n_before = raw_pts.shape[0]
+                sor_radius = 0.10  # search radius for neighbor counting
+                filtered, _ = approximate_density_filter(
+                    raw_pts, sor_radius, 0, sor_std=s.sor_std.value(),
+                )
+                n_after = filtered.shape[0]
+                n_removed = n_before - n_after
+                pct = 100 * n_removed / max(n_before, 1)
+                # Save filtered cloud to temp file
+                filtered_path = os.path.join(sd, "filtered_cloud.pcd")
+                write_xyz_pcd(filtered_path, filtered)
+                p = filtered_path
+                s.filter_status.setText(f"Filtered: {n_removed:,} pts removed ({pct:.1f}%)")
+                s._log(f"[Filter] SOR: {n_before:,} → {n_after:,} points ({n_removed:,} removed, {pct:.1f}%)", "success")
+            except Exception as e:
+                s._log(f"[Filter] SOR failed: {e} — using unfiltered cloud", "warn")
+                s.filter_status.setText("Filter failed")
 
         s._log(
             f"Generating Step 2 map from the {src_label}: {os.path.basename(p)}",
