@@ -917,9 +917,37 @@ class MainWin(QMainWindow):
 
     def _on_start_picked(s, px, py, wx, wy):
         s._act_start_world = (wx, wy)
+        s._act_start_px = (px, py)
         s.start_label.setText(f"Start: ({wx:.2f}, {wy:.2f}) m")
         s.start_label.setStyleSheet("color:#dc2626;font-size:11px;font-weight:bold")
         s._log(f"Start point set: pixel ({px}, {py}) → world ({wx:.2f}, {wy:.2f}) m", "success")
+
+    def _draw_start_marker(s, qi, result, start_world):
+        """Draw a red circle + crosshair at the robot start point on a coverage QImage."""
+        from PyQt5.QtGui import QPainter, QPen, QBrush
+        yd_path = s.e_yaml.text()
+        if not yd_path or not os.path.isfile(yd_path):
+            return qi
+        yd = parse_yaml(yd_path)
+        res = float(yd['resolution'])
+        ox, oy = float(yd['origin'][0]), float(yd['origin'][1])
+        h = result['h']
+        wx, wy = start_world
+        px = int((wx - ox) / res)
+        py = h - 1 - int((wy - oy) / res)
+
+        img = qi.copy()
+        p = QPainter(img)
+        p.setPen(QPen(QColor(220, 30, 30), 2))
+        p.setBrush(QBrush(QColor(220, 30, 30, 100)))
+        r = 8
+        p.drawEllipse(px - r, py - r, 2 * r, 2 * r)
+        p.drawLine(px - r - 4, py, px + r + 4, py)
+        p.drawLine(px, py - r - 4, px, py + r + 4)
+        p.setPen(QColor(255, 255, 255))
+        p.drawText(px + r + 6, py + 4, "START")
+        p.end()
+        return img
 
     def _on_hover_coords(s, px, py, wx, wy):
         s.coord_label.setText(f"pixel ({px}, {py})  |  world ({wx:.3f}, {wy:.3f}) m")
@@ -2544,7 +2572,8 @@ class MainWin(QMainWindow):
     def _run_ref(s):
         pgm, yml = s._get_pgm()
         if not pgm: return
-        if s._map_w == 0: s._load_map(pgm)
+        # Reload map from disk to pick up any edits
+        s._load_map(pgm)
         s.bref.setEnabled(False); s._log("Running reference...", "info"); s.prog.setValue(10)
         s.lref_note.setText("")
         params = s._get_params('r')
@@ -2555,11 +2584,15 @@ class MainWin(QMainWindow):
         yd = parse_yaml(yml)
         res = yd['resolution']; ox = yd['origin'][0]; oy = yd['origin'][1]
         w, h = s._map_w, s._map_h
-        center = s._selection_center_world(yml)
-        if center is not None:
-            cx, cy = center
+        # Use manually set start point if available
+        if hasattr(s, '_act_start_world') and s._act_start_world is not None:
+            cx, cy = s._act_start_world
         else:
-            cx = ox + w * res / 2; cy = oy + h * res / 2
+            center = s._selection_center_world(yml)
+            if center is not None:
+                cx, cy = center
+            else:
+                cx = ox + w * res / 2; cy = oy + h * res / 2
 
         def _worker():
             try:
@@ -2591,10 +2624,16 @@ class MainWin(QMainWindow):
             s.ref_r = r
             s.lref.setText(f"Ref: {s._result_area(r):.2f} m²")
             s.lref_note.setText(s._coverage_start_note(r))
-            # Render coverage on traversability map (primary) or obstacle map (fallback)
-            trav_px = getattr(s, '_trav_pixels', None)
-            bg = trav_px if trav_px is not None else getattr(s, '_pgm_pixels', None)
+            # Render coverage — v3 uses obstacle map pixels directly
+            if s._v3_mode:
+                bg = getattr(s, '_pgm_pixels', None)
+            else:
+                trav_px = getattr(s, '_trav_pixels', None)
+                bg = trav_px if trav_px is not None else getattr(s, '_pgm_pixels', None)
             qi = render_coverage_fast(r, (255, 165, 0), bg_pgm=bg)
+            # Draw start point marker on coverage image
+            if hasattr(s, '_act_start_world') and s._act_start_world is not None:
+                qi = s._draw_start_marker(qi, r, s._act_start_world)
             s._set_img("Reference Coverage", qi)
             s._update_stc_path_view()
             s._check_rii(pgm)
@@ -2662,10 +2701,15 @@ class MainWin(QMainWindow):
             s.act_r = r
             s.lact.setText(f"Actual: {s._result_area(r):.2f} m²")
             s.lact_note.setText(s._coverage_start_note(r))
-            # Render coverage on traversability map (primary) or obstacle map (fallback)
-            trav_px = getattr(s, '_trav_pixels', None)
-            bg = trav_px if trav_px is not None else getattr(s, '_pgm_pixels', None)
-            s._set_img("Actual Coverage", render_coverage_fast(r, (0, 229, 160), bg_pgm=bg))
+            if s._v3_mode:
+                bg = getattr(s, '_pgm_pixels', None)
+            else:
+                trav_px = getattr(s, '_trav_pixels', None)
+                bg = trav_px if trav_px is not None else getattr(s, '_pgm_pixels', None)
+            qi = render_coverage_fast(r, (0, 229, 160), bg_pgm=bg)
+            if s._act_start_world:
+                qi = s._draw_start_marker(qi, r, s._act_start_world)
+            s._set_img("Actual Coverage", qi)
             s._update_stc_path_view()
             s._check_rii(pgm)
             s._update_semantic_ready_state()

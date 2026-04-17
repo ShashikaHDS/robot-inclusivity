@@ -161,13 +161,17 @@ class MapW(QWidget):
         return s._edit_overlay
     def set_edit_mode(s, mode):
         s._edit_mode = mode
+        s._update_cursor()
     def set_brush_shape(s, shape):
         s._brush_shape = shape
+        s._update_cursor()
     def set_brush_size(s, size):
         s._brush_size = max(1, int(size))
+        s._update_cursor()
     def set_brush_rect_size(s, half_w, half_h):
         s._brush_rect_w = max(1, int(half_w))
         s._brush_rect_h = max(1, int(half_h))
+        s._update_cursor()
     def set_transition_overlay(s, qi, labels=None):
         """Set a semi-transparent RGBA QImage overlay showing ramp/step regions."""
         s._transition_overlay = qi
@@ -212,7 +216,27 @@ class MapW(QWidget):
         s.update()
     def _update_cursor(s):
         if s._edit_active:
-            s.setCursor(Qt.CrossCursor)
+            # Show brush size as a circle cursor
+            m = s._metrics()
+            if m:
+                scale = m[0]
+                if s._brush_shape == "rectangle":
+                    sz = max(int(max(s._brush_rect_w, s._brush_rect_h) * 2 * scale), 8)
+                else:
+                    sz = max(int(s._brush_size * 2 * scale), 8)
+                sz = min(sz, 128)  # cap cursor size
+                from PyQt5.QtGui import QPixmap, QCursor
+                pm = QPixmap(sz, sz)
+                pm.fill(QColor(0, 0, 0, 0))
+                p = QPainter(pm)
+                p.setPen(QPen(QColor(37, 99, 235, 180), 2))
+                p.drawEllipse(1, 1, sz - 2, sz - 2)
+                p.drawLine(sz // 2 - 3, sz // 2, sz // 2 + 3, sz // 2)
+                p.drawLine(sz // 2, sz // 2 - 3, sz // 2, sz // 2 + 3)
+                p.end()
+                s.setCursor(QCursor(pm, sz // 2, sz // 2))
+            else:
+                s.setCursor(Qt.CrossCursor)
         elif s._sm:
             s.setCursor(Qt.CrossCursor)
         elif s._bp:
