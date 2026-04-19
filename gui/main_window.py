@@ -93,6 +93,7 @@ from gui.widgets import (
     PYQTGRAPH_GL_AVAILABLE,
 )
 from gui.step_indicator import StepIndicator
+from gui.collapsible import CollapsibleSection
 
 
 class MainWin(QMainWindow):
@@ -191,145 +192,202 @@ class MainWin(QMainWindow):
 
     def _theme(s):
         s.setStyleSheet(f"""
-            QMainWindow, QWidget {{ background: {s._BG}; color: {s._TEXT}; }}
+            QMainWindow, QWidget {{
+                background: {s._BG}; color: {s._TEXT};
+                font-family: -apple-system, "Segoe UI", "Inter", "Helvetica Neue", Arial, sans-serif;
+            }}
             QLabel {{ color: {s._TEXT_SECONDARY}; font-size: 12px; }}
             QScrollArea {{ border: none; background: {s._BG}; }}
+
+            /* ── Input fields ───────────────────────────────── */
             QLineEdit, QDoubleSpinBox, QSpinBox, QComboBox {{
-                background: {s._BG_INPUT}; border: 1px solid {s._BORDER}; border-radius: 4px;
-                padding: 6px 10px; color: {s._TEXT}; font-family: monospace; font-size: 12px; min-height: 26px;
+                background: {s._BG_INPUT}; border: 1px solid {s._BORDER}; border-radius: 6px;
+                padding: 6px 10px; color: {s._TEXT};
+                font-family: "JetBrains Mono", "SF Mono", "Consolas", monospace;
+                font-size: 12px; min-height: 26px;
+                selection-background-color: #dbeafe; selection-color: #1e3a8a;
             }}
-            QLineEdit:focus, QDoubleSpinBox:focus, QSpinBox:focus {{ border-color: {s._BORDER_FOCUS}; }}
+            QLineEdit:hover, QDoubleSpinBox:hover, QSpinBox:hover, QComboBox:hover {{
+                border-color: #9ca3af;
+            }}
+            QLineEdit:focus, QDoubleSpinBox:focus, QSpinBox:focus, QComboBox:focus {{
+                border: 2px solid {s._BORDER_FOCUS}; padding: 5px 9px;
+            }}
+            QLineEdit:disabled, QDoubleSpinBox:disabled, QSpinBox:disabled, QComboBox:disabled {{
+                background: #f9fafb; color: {s._TEXT_MUTED}; border-color: #e5e7eb;
+            }}
+            QDoubleSpinBox::up-button, QSpinBox::up-button {{
+                subcontrol-origin: border; subcontrol-position: top right;
+                width: 16px; border-left: 1px solid {s._BORDER}; background: transparent;
+                border-top-right-radius: 5px;
+            }}
+            QDoubleSpinBox::down-button, QSpinBox::down-button {{
+                subcontrol-origin: border; subcontrol-position: bottom right;
+                width: 16px; border-left: 1px solid {s._BORDER}; background: transparent;
+                border-bottom-right-radius: 5px;
+            }}
+            QDoubleSpinBox::up-button:hover, QSpinBox::up-button:hover,
+            QDoubleSpinBox::down-button:hover, QSpinBox::down-button:hover {{
+                background: #f3f4f6;
+            }}
+            QComboBox::drop-down {{ border: none; width: 24px; }}
+            QComboBox QAbstractItemView {{
+                background: {s._BG_INPUT}; border: 1px solid {s._BORDER};
+                border-radius: 6px; padding: 4px; selection-background-color: #dbeafe;
+                selection-color: {s._ACCENT_HOVER}; outline: none;
+            }}
+
+            /* ── Nested QGroupBox (sub-panels inside a section) ── */
             QGroupBox {{
-                background: {s._BG_PANEL}; border: 1px solid {s._BORDER}; border-radius: 6px;
-                margin-top: 16px; padding: 16px; padding-top: 26px;
+                background: #fafbfc; border: 1px solid #e5e7eb; border-radius: 8px;
+                margin-top: 14px; padding: 14px; padding-top: 22px;
             }}
-            QGroupBox::title {{ subcontrol-origin: margin; left: 14px; padding: 0 8px;
-                color: {s._TEXT}; font-size: 12px; font-weight: bold; }}
-            QProgressBar {{ background: #e5e7eb; border: none; border-radius: 2px; height: 4px; }}
-            QProgressBar::chunk {{ background: {s._ACCENT}; border-radius: 2px; }}
-            QTextEdit {{ background: {s._BG_PANEL}; border: 1px solid {s._BORDER}; border-radius: 6px;
-                color: {s._TEXT_SECONDARY}; font-family: monospace; font-size: 11px; }}
-            QSplitter::handle {{ background: {s._BORDER}; width: 6px; }}
-            QSplitter::handle:hover {{ background: {s._ACCENT}; }}
-            QCheckBox {{ color: {s._TEXT_SECONDARY}; font-size: 11px; }}
-            QListWidget {{ background: {s._BG_INPUT}; border: 1px solid {s._BORDER}; border-radius: 6px;
-                color: {s._TEXT}; font-size: 11px; }}
-            QListWidget::item:selected {{ background: #dbeafe; color: {s._TEXT}; }}
+            QGroupBox::title {{
+                subcontrol-origin: margin; left: 12px; padding: 2px 8px;
+                color: {s._TEXT}; font-size: 11px; font-weight: 700;
+                letter-spacing: 0.3px; text-transform: uppercase;
+            }}
+
+            /* ── Progress bar ───────────────────────────────── */
+            QProgressBar {{
+                background: #f3f4f6; border: none; border-radius: 4px;
+                height: 8px; max-height: 8px; text-align: center;
+            }}
+            QProgressBar::chunk {{
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                            stop:0 #3b82f6, stop:1 {s._ACCENT});
+                border-radius: 4px;
+            }}
+
+            /* ── Log panel ──────────────────────────────────── */
+            QTextEdit {{
+                background: #fafbfc; border: 1px solid #e5e7eb; border-radius: 8px;
+                color: {s._TEXT_SECONDARY};
+                font-family: "JetBrains Mono", "SF Mono", "Consolas", monospace;
+                font-size: 11px; padding: 8px 10px;
+                selection-background-color: #dbeafe;
+            }}
+
+            /* ── Splitter ───────────────────────────────────── */
+            QSplitter::handle {{
+                background: transparent; width: 8px;
+                border-left: 1px solid {s._BORDER};
+            }}
+            QSplitter::handle:hover {{ border-left: 2px solid {s._ACCENT}; }}
+
+            /* ── Checkbox ───────────────────────────────────── */
+            QCheckBox {{ color: {s._TEXT_SECONDARY}; font-size: 11px; spacing: 8px; }}
+            QCheckBox::indicator {{
+                width: 15px; height: 15px; border: 1.5px solid {s._BORDER};
+                border-radius: 4px; background: {s._BG_INPUT};
+            }}
+            QCheckBox::indicator:hover {{ border-color: {s._ACCENT}; }}
+            QCheckBox::indicator:checked {{
+                background: {s._ACCENT}; border-color: {s._ACCENT_HOVER};
+                image: url();  /* drawn as solid fill; Qt renders a check glyph */
+            }}
+
+            /* ── List widget (used in Help dialog etc.) ─────── */
+            QListWidget {{
+                background: {s._BG_INPUT}; border: 1px solid #e5e7eb; border-radius: 8px;
+                color: {s._TEXT}; font-size: 12px; padding: 4px; outline: none;
+            }}
+            QListWidget::item {{ padding: 8px 12px; border-radius: 6px; margin: 1px 0; }}
+            QListWidget::item:hover {{ background: #f9fafb; }}
+            QListWidget::item:selected {{ background: #dbeafe; color: {s._ACCENT_HOVER}; }}
+
+            /* ── Scrollbars (subtle, macOS-style) ───────────── */
+            QScrollBar:vertical {{
+                background: transparent; width: 10px; margin: 0;
+            }}
+            QScrollBar::handle:vertical {{
+                background: #d1d5db; border-radius: 5px; min-height: 24px;
+                margin: 2px;
+            }}
+            QScrollBar::handle:vertical:hover {{ background: #9ca3af; }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}
+            QScrollBar:horizontal {{
+                background: transparent; height: 10px; margin: 0;
+            }}
+            QScrollBar::handle:horizontal {{
+                background: #d1d5db; border-radius: 5px; min-width: 24px; margin: 2px;
+            }}
+            QScrollBar::handle:horizontal:hover {{ background: #9ca3af; }}
+            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
+            QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{ background: transparent; }}
+
+            /* ── ToolTip ────────────────────────────────────── */
+            QToolTip {{
+                background: #1f2937; color: #f9fafb; border: 1px solid #374151;
+                border-radius: 6px; padding: 6px 10px; font-size: 11px;
+            }}
+
+            /* ── Tab bar (right panel) ──────────────────────── */
+            QTabBar {{ qproperty-drawBase: 0; background: transparent; }}
+            QTabBar::tab {{
+                background: {s._BG_PANEL};
+                color: {s._TEXT_SECONDARY};
+                border: 1px solid #e5e7eb;
+                border-radius: 6px;
+                padding: 6px 14px; margin: 3px 2px;
+                font-size: 11px; font-weight: 600;
+            }}
+            QTabBar::tab:hover {{ background: #eff6ff; color: {s._ACCENT}; border-color: #bfdbfe; }}
+            QTabBar::tab:selected {{
+                background: #dbeafe; color: {s._ACCENT_HOVER};
+                border: 1px solid {s._ACCENT};
+            }}
         """)
 
-    # Premium button styling: subtle vertical gradient, top-edge highlight,
-    # crisp hover/pressed/focus/disabled states. No external deps.
+    # Flat button styling — solid colors, simple hover/press states.
     _BTN_BASE = (
         "QPushButton {"
         "  color: #ffffff;"
-        "  border-radius: 6px;"
-        "  padding: 9px 16px;"
-        "  font-weight: 600;"
+        "  border: none;"
+        "  border-radius: 4px;"
+        "  padding: 10px;"
+        "  font-weight: bold;"
         "  font-size: 13px;"
-        "  letter-spacing: 0.2px;"
-        "  min-height: 18px;"
         "}"
-        "QPushButton:disabled {"
-        "  background: #e5e7eb;"
-        "  border: 1px solid #d1d5db;"
-        "  color: #9ca3af;"
-        "}"
-        "QPushButton:focus { outline: none; }"
+        "QPushButton:disabled { background: #e5e7eb; color: #9ca3af; }"
     )
 
     def _B(s, _c=None):
-        """Primary (blue) button — filled gradient with subtle top highlight."""
         return (
             s._BTN_BASE +
-            "QPushButton {"
-            "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
-            "                              stop:0 #3b82f6, stop:1 #2563eb);"
-            "  border: 1px solid #1d4ed8;"
-            "  border-top-color: #60a5fa;"
-            "}"
-            "QPushButton:hover {"
-            "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
-            "                              stop:0 #2563eb, stop:1 #1d4ed8);"
-            "  border: 1px solid #1e40af;"
-            "  border-top-color: #3b82f6;"
-            "}"
-            "QPushButton:pressed {"
-            "  background: #1e3a8a;"
-            "  border: 1px solid #1e3a8a;"
-            "  padding-top: 10px; padding-bottom: 8px;"
-            "}"
+            f"QPushButton {{ background: {s._ACCENT}; }}"
+            f"QPushButton:hover {{ background: {s._ACCENT_HOVER}; }}"
+            f"QPushButton:pressed {{ background: #1e40af; }}"
         )
 
     def _B_secondary(s):
-        """Secondary — white with accent text, used for non-primary actions."""
         return (
-            s._BTN_BASE +
             "QPushButton {"
-            "  background: #ffffff;"
-            "  color: #2563eb;"
-            "  border: 1px solid #d1d5db;"
+            f"  background: #ffffff; color: {s._ACCENT};"
+            f"  border: 1px solid {s._BORDER};"
+            "  border-radius: 4px; padding: 10px;"
+            "  font-weight: bold; font-size: 13px;"
             "}"
-            "QPushButton:hover {"
-            "  background: #eff6ff;"
-            "  border: 1px solid #93c5fd;"
-            "  color: #1d4ed8;"
-            "}"
-            "QPushButton:pressed {"
-            "  background: #dbeafe;"
-            "  border: 1px solid #60a5fa;"
-            "  padding-top: 10px; padding-bottom: 8px;"
-            "}"
-            "QPushButton:disabled {"
-            "  background: #f9fafb;"
-            "  color: #9ca3af;"
-            "  border: 1px solid #e5e7eb;"
-            "}"
+            "QPushButton:hover { background: #f0f4ff; border-color: #2563eb; }"
+            "QPushButton:pressed { background: #dbeafe; }"
+            "QPushButton:disabled { background: #f3f4f6; color: #9ca3af; border-color: #e5e7eb; }"
         )
 
     def _B_danger(s):
-        """Danger (red) button — for destructive actions."""
         return (
             s._BTN_BASE +
-            "QPushButton {"
-            "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
-            "                              stop:0 #ef4444, stop:1 #dc2626);"
-            "  border: 1px solid #b91c1c;"
-            "  border-top-color: #f87171;"
-            "}"
-            "QPushButton:hover {"
-            "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
-            "                              stop:0 #dc2626, stop:1 #b91c1c);"
-            "  border: 1px solid #991b1b;"
-            "  border-top-color: #ef4444;"
-            "}"
-            "QPushButton:pressed {"
-            "  background: #7f1d1d;"
-            "  border: 1px solid #7f1d1d;"
-            "  padding-top: 10px; padding-bottom: 8px;"
-            "}"
+            f"QPushButton {{ background: {s._DANGER}; }}"
+            "QPushButton:hover { background: #b91c1c; }"
+            "QPushButton:pressed { background: #991b1b; }"
         )
 
     def _B_success(s):
-        """Success (green) button — for completion / positive actions."""
         return (
             s._BTN_BASE +
-            "QPushButton {"
-            "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
-            "                              stop:0 #10b981, stop:1 #059669);"
-            "  border: 1px solid #047857;"
-            "  border-top-color: #34d399;"
-            "}"
-            "QPushButton:hover {"
-            "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
-            "                              stop:0 #059669, stop:1 #047857);"
-            "  border: 1px solid #065f46;"
-            "  border-top-color: #10b981;"
-            "}"
-            "QPushButton:pressed {"
-            "  background: #064e3b;"
-            "  border: 1px solid #064e3b;"
-            "  padding-top: 10px; padding-bottom: 8px;"
-            "}"
+            "QPushButton { background: #10b981; }"
+            "QPushButton:hover { background: #059669; }"
+            "QPushButton:pressed { background: #047857; }"
         )
 
     def _log(s, m, c=""):
@@ -344,6 +402,19 @@ class MainWin(QMainWindow):
         s.map_dir = os.path.join(s._cache_root, "map")
         os.makedirs(s.pcd_out, exist_ok=True)
         os.makedirs(s.map_dir, exist_ok=True)
+
+    def _mk_browse_btn(s, tooltip, on_click):
+        from PyQt5.QtWidgets import QStyle
+        b = QPushButton(s.style().standardIcon(QStyle.SP_DirOpenIcon), "")
+        b.setFixedSize(36, 34); b.setToolTip(tooltip)
+        b.setStyleSheet(
+            "QPushButton { background:#ffffff; border:1px solid #d1d5db;"
+            "              border-radius:6px; padding:4px; }"
+            "QPushButton:hover { background:#eff6ff; border-color:#93c5fd; }"
+            "QPushButton:pressed { background:#dbeafe; }"
+        )
+        b.clicked.connect(on_click)
+        return b
 
     def _browse_dir(s, le, attr):
         d = QFileDialog.getExistingDirectory(s, "Select", getattr(s, attr))
@@ -1283,12 +1354,29 @@ class MainWin(QMainWindow):
     def _scroll_to_step(s, idx):
         if 0 <= idx < len(s._group_boxes):
             gb = s._group_boxes[idx]
+            if hasattr(gb, "expand"):
+                gb.expand()
             area = s._sidebar_scroll
-            # Scroll the sidebar so the group box top aligns with the viewport top
             if area is not None:
-                y = gb.mapTo(area.widget(), gb.rect().topLeft()).y()
-                area.verticalScrollBar().setValue(max(0, y - 8))
+                from PyQt5.QtCore import QTimer
+                def _do_scroll():
+                    y = gb.mapTo(area.widget(), gb.rect().topLeft()).y()
+                    area.verticalScrollBar().setValue(max(0, y - 8))
+                QTimer.singleShot(0, _do_scroll)
             s._stepper.set_active(idx)
+            s._sync_section_states(idx)
+
+    def _sync_section_states(s, active_idx):
+        """Mirror the stepper's active/complete/pending states onto the section headers."""
+        for i, gb in enumerate(s._group_boxes):
+            if not hasattr(gb, "setActive"):
+                continue
+            if i < active_idx:
+                gb.setStatus("complete"); gb.setActive(False)
+            elif i == active_idx:
+                gb.setStatus("active"); gb.setActive(True)
+            else:
+                gb.setStatus("pending"); gb.setActive(False)
 
     # Widget attribute names → (type, getter-hint). Kept in one place so
     # save/load stay in sync when a new parameter is added.
@@ -1451,16 +1539,28 @@ class MainWin(QMainWindow):
         lw = QWidget(); ll = QVBoxLayout(lw)
         ll.setSpacing(8); ll.setContentsMargins(12, 12, 12, 12)
 
+        from PyQt5.QtWidgets import QStyle
+        _folder_icon = s.style().standardIcon(QStyle.SP_DirOpenIcon)
+        _browse_ss = (
+            "QPushButton { background: #ffffff; border: 1px solid #d1d5db;"
+            "              border-radius: 6px; padding: 4px; }"
+            "QPushButton:hover { background: #eff6ff; border-color: #93c5fd; }"
+            "QPushButton:pressed { background: #dbeafe; }"
+        )
+
         def mkbr_dir(le, attr):
-            b = QPushButton("📂"); b.setFixedWidth(34)
+            b = QPushButton(_folder_icon, ""); b.setFixedSize(36, 34)
+            b.setToolTip("Browse for folder"); b.setStyleSheet(_browse_ss)
             b.clicked.connect(lambda: s._browse_dir(le, attr)); return b
 
         def mkbr_cloud(le, attr):
-            b = QPushButton("📂"); b.setFixedWidth(34)
+            b = QPushButton(_folder_icon, ""); b.setFixedSize(36, 34)
+            b.setToolTip("Browse for point cloud (.pcd / .ply)")
+            b.setStyleSheet(_browse_ss)
             b.clicked.connect(lambda: s._browse_point_cloud(le, attr)); return b
 
         # Step 1
-        g1 = QGroupBox("Step 1 — View Raw Point Cloud"); l1 = QVBoxLayout()
+        g1 = QWidget(); l1 = QVBoxLayout()
         h1 = QHBoxLayout(); s.e_in = QLineEdit(s.pcd_in)
         s.e_in.setPlaceholderText("Pick a raw .pcd or .ply file")
         h1.addWidget(QLabel("Input File:")); h1.addWidget(s.e_in, 1); h1.addWidget(mkbr_cloud(s.e_in, 'pcd_in'))
@@ -1488,10 +1588,11 @@ class MainWin(QMainWindow):
         s.filter_status.setStyleSheet("color:#059669;font-size:11px")
         filter_row.addWidget(s.filter_status, 1)
         l1.addLayout(filter_row)
-        g1.setLayout(l1); ll.addWidget(g1)
+        g1.setLayout(l1)
+        section1 = CollapsibleSection(1, "View Raw Point Cloud", g1); ll.addWidget(section1)
 
         # Step 2
-        g4 = QGroupBox("Step 2 — Generate 2D Map"); l4 = QVBoxLayout()
+        g4 = QWidget(); l4 = QVBoxLayout()
         h4 = QHBoxLayout(); s.e_save = QLineEdit(s.map_dir)
         s.e_save.setReadOnly(True)
         h4.addWidget(QLabel("Cache Dir:")); h4.addWidget(s.e_save, 1)
@@ -1640,7 +1741,8 @@ class MainWin(QMainWindow):
         s._manual_ramps = []
         l4.addWidget(QLabel("The floor is auto-detected. Obstacle max height is relative to the detected floor level."))
         l4.addWidget(QLabel("Outputs are cached in a temporary session folder unless you explicitly save them."))
-        g4.setLayout(l4); ll.addWidget(g4)
+        g4.setLayout(l4)
+        section4 = CollapsibleSection(2, "Generate 2D Map", g4); ll.addWidget(section4)
 
         # ── Edit Map ──
         edit_title = "Edit Obstacle Map" if s._v3_mode else "Edit Traversable Ground"
@@ -1699,17 +1801,17 @@ class MainWin(QMainWindow):
         s.btn_edit_revert.clicked.connect(s._revert_trav_edit)
         edit_row3.addWidget(s.btn_edit_apply); edit_row3.addWidget(s.btn_edit_revert)
         l_edit.addLayout(edit_row3)
-        g_edit.setLayout(l_edit); ll.addWidget(g_edit)
+        g_edit.setLayout(l_edit); l4.addWidget(g_edit)
 
         # Step 3
-        g5 = QGroupBox("Step 3 — RII Horizontal"); l5 = QVBoxLayout(); l5.setSpacing(8)
+        g5 = QWidget(); l5 = QVBoxLayout(); l5.setSpacing(8)
         hm = QHBoxLayout()
         s.e_pgm = QLineEdit(""); s.e_pgm.setPlaceholderText("Auto from Step 2 or browse")
-        bm = QPushButton("📂"); bm.setFixedWidth(34); bm.clicked.connect(s._browse_pgm)
+        bm = s._mk_browse_btn("Browse for .pgm file", s._browse_pgm)
         hm.addWidget(QLabel(".pgm:")); hm.addWidget(s.e_pgm, 1); hm.addWidget(bm); l5.addLayout(hm)
         hy = QHBoxLayout()
         s.e_yaml = QLineEdit(""); s.e_yaml.setPlaceholderText("Auto from .pgm path or browse")
-        by = QPushButton("📂"); by.setFixedWidth(34); by.clicked.connect(s._browse_yaml)
+        by = s._mk_browse_btn("Browse for .yaml file", s._browse_yaml)
         hy.addWidget(QLabel(".yaml:")); hy.addWidget(s.e_yaml, 1); hy.addWidget(by); l5.addLayout(hy)
 
         sh = QHBoxLayout()
@@ -1815,10 +1917,11 @@ class MainWin(QMainWindow):
         s.riis.setStyleSheet("color:#6b7280;font-size:12px"); rf.addWidget(s.riis)
         s.riif.hide(); l5.addWidget(s.riif)
 
-        g5.setLayout(l5); ll.addWidget(g5)
+        g5.setLayout(l5)
+        section5 = CollapsibleSection(3, "RII Horizontal", g5); ll.addWidget(section5)
 
         # Step 4 — RII Horizontal Analysis
-        g6 = QGroupBox("Step 4 — RII Horizontal Analysis"); l6 = QVBoxLayout(); l6.setSpacing(8)
+        g6 = QWidget(); l6 = QVBoxLayout(); l6.setSpacing(8)
         l6.addWidget(QLabel(
             "Load a CloudCompare-labeled PCD or PLY (labels 0-15 from the paper taxonomy)\n"
             "to explain the RII Horizontal gap by fixation group and recommended interventions."
@@ -1826,8 +1929,7 @@ class MainWin(QMainWindow):
 
         hsem = QHBoxLayout()
         s.e_sem_pcd = QLineEdit(""); s.e_sem_pcd.setPlaceholderText("Path to labeled .pcd or .ply file")
-        bsem = QPushButton("📂"); bsem.setFixedWidth(34)
-        bsem.clicked.connect(s._browse_sem_pcd)
+        bsem = s._mk_browse_btn("Browse for labelled cloud", s._browse_sem_pcd)
         hsem.addWidget(QLabel("Labeled Cloud:")); hsem.addWidget(s.e_sem_pcd, 1); hsem.addWidget(bsem)
         l6.addLayout(hsem)
 
@@ -2054,10 +2156,11 @@ class MainWin(QMainWindow):
         # Hidden widget kept for backward compatibility — report stored but not displayed inline
         s.sem_report = QTextEdit(); s.sem_report.setReadOnly(True); s.sem_report.hide()
 
-        g6.setLayout(l6); ll.addWidget(g6)
+        g6.setLayout(l6)
+        section6 = CollapsibleSection(4, "RII Horizontal Analysis", g6); ll.addWidget(section6)
 
         # Step 5 — RII Vertical (Wall Paint Coverage)
-        g7 = QGroupBox("Step 5 — RII Vertical (Wall Reachability)"); l7 = QVBoxLayout(); l7.setSpacing(8)
+        g7 = QWidget(); l7 = QVBoxLayout(); l7.setSpacing(8)
         l7.addWidget(QLabel(
             "Compute wall surface reachability from accessible floor using STVL raycasting.\n"
             "Requires: labelled point cloud (Step 4) + RII Horizontal (Step 3)."
@@ -2253,12 +2356,15 @@ class MainWin(QMainWindow):
         s.rv_combf.hide()
         l7.addWidget(s.rv_combf)
 
-        g7.setLayout(l7); ll.addWidget(g7)
+        g7.setLayout(l7)
+        section7 = CollapsibleSection(5, "RII Vertical — Wall Reachability", g7); ll.addWidget(section7)
 
         ll.addStretch()
         ls.setWidget(lw); sp.addWidget(ls)
         s._sidebar_scroll = ls
-        s._group_boxes = [g1, g4, g5, g6, g7]
+        s._group_boxes = [section1, section4, section5, section6, section7]
+        # Initial: Step 1 active, rest pending
+        s._sync_section_states(0)
 
         # RIGHT panel
         rw = QWidget(); rl = QVBoxLayout(rw); rl.setContentsMargins(0, 0, 0, 0); rl.setSpacing(0)
@@ -2448,7 +2554,7 @@ class MainWin(QMainWindow):
         if not os.path.isfile(p): QMessageBox.warning(s, "Error", p); return
         s.b1.setEnabled(False)
         s._set_worker_status("Loading point cloud…", busy=True)
-        s._stepper.set_active(0)
+        s._stepper.set_active(0); s._sync_section_states(0)
         w = ViewW(p, "3D Viewer")
         w.log.connect(s._log)
         w.loaded.connect(lambda cloud: s._set_cloud("3D Viewer", cloud))
@@ -2457,6 +2563,7 @@ class MainWin(QMainWindow):
             s._set_worker_status("Idle")
             if ok:
                 s._stepper.set_status(0, "complete")
+                s._group_boxes[0].setStatus("complete")
         w.done.connect(_d)
         s._wk.append(w); w.start()
 
@@ -2584,7 +2691,7 @@ class MainWin(QMainWindow):
         w = MapBuildW(p, sd, mz, xz, s.t_slope.value(), s.t_step.value(), v3_mode=s._v3_mode, min_points_per_cell=s.min_pts_cell.value())
         w.log.connect(s._log); w.prog.connect(s.prog.setValue)
         s._set_worker_status("Building 2D map…", busy=True)
-        s._stepper.set_active(1)
+        s._stepper.set_active(1); s._sync_section_states(1)
         def done(ok, msg):
             s.b4.setEnabled(True)
             s._set_worker_status("Idle")
@@ -2594,8 +2701,10 @@ class MainWin(QMainWindow):
                 s._log(f"Map: {pgm}", "success")
                 if os.path.isfile(pgm): s._load_map(pgm)
                 s._stepper.set_status(1, "complete")
+                s._group_boxes[1].setStatus("complete")
             else:
                 s._stepper.set_status(1, "pending")
+                s._group_boxes[1].setStatus("pending")
         w.done.connect(done); s._wk.append(w); w.start()
 
     # ── Ground Analysis (RANSAC ramp detection) ──

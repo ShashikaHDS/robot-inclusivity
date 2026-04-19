@@ -11,6 +11,10 @@ build/
 # PyInstaller
 *.spec
 
+# Windows build kit (regenerate with package_for_windows.py)
+windows_build_kit/
+Output/
+
 # IDE
 .vscode/
 .idea/

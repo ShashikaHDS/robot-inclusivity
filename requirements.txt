@@ -4,7 +4,6 @@ numpy
 Pillow
 pyqtgraph
 PyOpenGL
-open3d
 
 # Performance optimizations (strongly recommended)
 numba       # JIT-compiled raycasting — 50-100x faster RII Vertical
