@@ -23,8 +23,9 @@ from PyQt5.QtWidgets import (
     QCheckBox, QListWidget, QListWidgetItem,
     QFileDialog, QMessageBox, QSizePolicy,
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QRect
-from PyQt5.QtGui import QImage, QColor, QIcon
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QRect, QSettings
+from PyQt5.QtGui import QImage, QColor, QIcon, QKeySequence
+from PyQt5.QtWidgets import QAction
 
 from config import (
     DEFAULT_PCD_IN as DEF_IN,
@@ -91,6 +92,7 @@ from gui.widgets import (
     PointCloudPreviewW, PointCloudW,
     PYQTGRAPH_GL_AVAILABLE,
 )
+from gui.step_indicator import StepIndicator
 
 
 class MainWin(QMainWindow):
@@ -163,6 +165,7 @@ class MainWin(QMainWindow):
         s._rv_result = None
         s._rv_wall_segments = []
         s._rv_focused_wall_id = None
+        s._project_path = None
         s._log(s._viewer_backend_startup_message(), "info" if PYQTGRAPH_GL_AVAILABLE else "warn")
         s._log(f"Session cache: {s._cache_root}", "info")
         s._log("Pipeline ready. Steps 1→6.", "info")
@@ -214,24 +217,120 @@ class MainWin(QMainWindow):
             QListWidget::item:selected {{ background: #dbeafe; color: {s._TEXT}; }}
         """)
 
+    # Premium button styling: subtle vertical gradient, top-edge highlight,
+    # crisp hover/pressed/focus/disabled states. No external deps.
+    _BTN_BASE = (
+        "QPushButton {"
+        "  color: #ffffff;"
+        "  border-radius: 6px;"
+        "  padding: 9px 16px;"
+        "  font-weight: 600;"
+        "  font-size: 13px;"
+        "  letter-spacing: 0.2px;"
+        "  min-height: 18px;"
+        "}"
+        "QPushButton:disabled {"
+        "  background: #e5e7eb;"
+        "  border: 1px solid #d1d5db;"
+        "  color: #9ca3af;"
+        "}"
+        "QPushButton:focus { outline: none; }"
+    )
+
     def _B(s, _c=None):
-        """Uniform button style. The color argument is accepted but ignored."""
-        return (f"QPushButton {{ background: {s._ACCENT}; color: #ffffff; border: none; border-radius: 4px; "
-                f"padding: 10px; font-weight: bold; font-size: 13px; }}"
-                f"QPushButton:hover {{ background: {s._ACCENT_HOVER}; }}"
-                f"QPushButton:disabled {{ background: #e5e7eb; color: #9ca3af; }}")
+        """Primary (blue) button — filled gradient with subtle top highlight."""
+        return (
+            s._BTN_BASE +
+            "QPushButton {"
+            "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
+            "                              stop:0 #3b82f6, stop:1 #2563eb);"
+            "  border: 1px solid #1d4ed8;"
+            "  border-top-color: #60a5fa;"
+            "}"
+            "QPushButton:hover {"
+            "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
+            "                              stop:0 #2563eb, stop:1 #1d4ed8);"
+            "  border: 1px solid #1e40af;"
+            "  border-top-color: #3b82f6;"
+            "}"
+            "QPushButton:pressed {"
+            "  background: #1e3a8a;"
+            "  border: 1px solid #1e3a8a;"
+            "  padding-top: 10px; padding-bottom: 8px;"
+            "}"
+        )
 
     def _B_secondary(s):
-        return (f"QPushButton {{ background: #ffffff; color: {s._ACCENT}; border: 1px solid {s._BORDER}; "
-                f"border-radius: 4px; padding: 10px; font-weight: bold; font-size: 13px; }}"
-                f"QPushButton:hover {{ background: #f0f4ff; border-color: {s._ACCENT}; }}"
-                f"QPushButton:disabled {{ background: #f3f4f6; color: #9ca3af; }}")
+        """Secondary — white with accent text, used for non-primary actions."""
+        return (
+            s._BTN_BASE +
+            "QPushButton {"
+            "  background: #ffffff;"
+            "  color: #2563eb;"
+            "  border: 1px solid #d1d5db;"
+            "}"
+            "QPushButton:hover {"
+            "  background: #eff6ff;"
+            "  border: 1px solid #93c5fd;"
+            "  color: #1d4ed8;"
+            "}"
+            "QPushButton:pressed {"
+            "  background: #dbeafe;"
+            "  border: 1px solid #60a5fa;"
+            "  padding-top: 10px; padding-bottom: 8px;"
+            "}"
+            "QPushButton:disabled {"
+            "  background: #f9fafb;"
+            "  color: #9ca3af;"
+            "  border: 1px solid #e5e7eb;"
+            "}"
+        )
 
     def _B_danger(s):
-        return (f"QPushButton {{ background: {s._DANGER}; color: #ffffff; border: none; border-radius: 4px; "
-                f"padding: 10px; font-weight: bold; font-size: 13px; }}"
-                f"QPushButton:hover {{ background: #b91c1c; }}"
-                f"QPushButton:disabled {{ background: #e5e7eb; color: #9ca3af; }}")
+        """Danger (red) button — for destructive actions."""
+        return (
+            s._BTN_BASE +
+            "QPushButton {"
+            "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
+            "                              stop:0 #ef4444, stop:1 #dc2626);"
+            "  border: 1px solid #b91c1c;"
+            "  border-top-color: #f87171;"
+            "}"
+            "QPushButton:hover {"
+            "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
+            "                              stop:0 #dc2626, stop:1 #b91c1c);"
+            "  border: 1px solid #991b1b;"
+            "  border-top-color: #ef4444;"
+            "}"
+            "QPushButton:pressed {"
+            "  background: #7f1d1d;"
+            "  border: 1px solid #7f1d1d;"
+            "  padding-top: 10px; padding-bottom: 8px;"
+            "}"
+        )
+
+    def _B_success(s):
+        """Success (green) button — for completion / positive actions."""
+        return (
+            s._BTN_BASE +
+            "QPushButton {"
+            "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
+            "                              stop:0 #10b981, stop:1 #059669);"
+            "  border: 1px solid #047857;"
+            "  border-top-color: #34d399;"
+            "}"
+            "QPushButton:hover {"
+            "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
+            "                              stop:0 #059669, stop:1 #047857);"
+            "  border: 1px solid #065f46;"
+            "  border-top-color: #10b981;"
+            "}"
+            "QPushButton:pressed {"
+            "  background: #064e3b;"
+            "  border: 1px solid #064e3b;"
+            "  padding-top: 10px; padding-bottom: 8px;"
+            "}"
+        )
 
     def _log(s, m, c=""):
         cl = {"info": "#2563eb", "success": "#16a34a", "warn": "#dc2626", "gold": "#d97706"}.get(c, "#6b7280")
@@ -880,6 +979,7 @@ class MainWin(QMainWindow):
         ):
             s._clear_step5_results("Loaded a different map. Rerun Step 3 on the current map.")
         s._loaded_map_path = pgm
+        s._update_statusbar_map(pgm)
         yaml_guess = pgm.replace(".pgm", ".yaml")
         if os.path.isfile(yaml_guess):
             s._update_actual_start_bounds(yaml_guess)
@@ -1032,12 +1132,319 @@ class MainWin(QMainWindow):
         return selection_mask_from_display(s.mw.sel, s._map_w, s._map_h)
 
     # ══════════════════════════════════════════════════════════════════════
+    # Project save/load
+    # ══════════════════════════════════════════════════════════════════════
+    _MRU_MAX = 5
+    _MRU_KEY = "recent_projects"
+
+    def _build_menu(s):
+        from PyQt5.QtWidgets import QStyle
+        st = s.style()
+        mb = s.menuBar()
+        mb.setStyleSheet(
+            f"QMenuBar {{ background: {s._BG}; border-bottom: 1px solid {s._BORDER}; padding: 2px; }}"
+            f"QMenuBar::item {{ background: transparent; padding: 6px 12px; color: {s._TEXT}; }}"
+            f"QMenuBar::item:selected {{ background: #dbeafe; color: {s._ACCENT}; border-radius: 4px; }}"
+            f"QMenu {{ background: {s._BG}; border: 1px solid {s._BORDER}; padding: 4px; }}"
+            f"QMenu::item {{ padding: 6px 24px 6px 24px; color: {s._TEXT}; border-radius: 4px; }}"
+            f"QMenu::item:selected {{ background: #dbeafe; color: {s._ACCENT}; }}"
+            f"QMenu::item:disabled {{ color: {s._TEXT_MUTED}; }}"
+            f"QMenu::separator {{ height: 1px; background: {s._BORDER}; margin: 4px 8px; }}"
+        )
+        m = mb.addMenu("&File")
+        a_open = QAction(st.standardIcon(QStyle.SP_DirOpenIcon), "&Open Project…", s)
+        a_open.setShortcut(QKeySequence.Open)
+        a_open.triggered.connect(s._open_project); m.addAction(a_open)
+        s._recent_menu = m.addMenu("Open &Recent")
+        s._recent_menu.setIcon(st.standardIcon(QStyle.SP_FileIcon))
+        s._rebuild_recent_menu()
+        m.addSeparator()
+        a_save = QAction(st.standardIcon(QStyle.SP_DialogSaveButton), "&Save Project", s)
+        a_save.setShortcut(QKeySequence.Save)
+        a_save.triggered.connect(s._save_project); m.addAction(a_save)
+        a_save_as = QAction(st.standardIcon(QStyle.SP_DialogSaveButton), "Save Project &As…", s)
+        a_save_as.setShortcut("Ctrl+Shift+S")
+        a_save_as.triggered.connect(s._save_project_as); m.addAction(a_save_as)
+        m.addSeparator()
+        a_quit = QAction(st.standardIcon(QStyle.SP_DialogCloseButton), "&Quit", s)
+        a_quit.setShortcut(QKeySequence.Quit)
+        a_quit.triggered.connect(s.close); m.addAction(a_quit)
+
+        # ── Help menu ────────────────────────────────────────────────────
+        h = mb.addMenu("&Help")
+        a_guide = QAction(st.standardIcon(QStyle.SP_MessageBoxQuestion), "&User Guide", s)
+        a_guide.setShortcut("F1")
+        a_guide.triggered.connect(s._show_user_guide); h.addAction(a_guide)
+        a_keys = QAction(st.standardIcon(QStyle.SP_FileDialogContentsView), "&Keyboard Shortcuts", s)
+        a_keys.triggered.connect(s._show_shortcuts); h.addAction(a_keys)
+        h.addSeparator()
+        a_about = QAction(st.standardIcon(QStyle.SP_MessageBoxInformation), "&About", s)
+        a_about.triggered.connect(s._show_about); h.addAction(a_about)
+
+    def _show_user_guide(s):
+        from gui.help_dialog import UserGuideDialog
+        UserGuideDialog(s).exec_()
+
+    def _show_shortcuts(s):
+        from gui.help_dialog import ShortcutsDialog
+        ShortcutsDialog(s).exec_()
+
+    def _show_about(s):
+        from gui.help_dialog import AboutDialog
+        AboutDialog(s).exec_()
+
+    def _settings(s):
+        return QSettings("rii_pipeline", "rii_pipeline")
+
+    def _get_recent(s):
+        v = s._settings().value(s._MRU_KEY, [])
+        if isinstance(v, str):
+            v = [v]
+        return [p for p in (v or []) if isinstance(p, str) and p]
+
+    def _push_recent(s, path):
+        path = os.path.abspath(path)
+        recent = [p for p in s._get_recent() if p != path]
+        recent.insert(0, path)
+        s._settings().setValue(s._MRU_KEY, recent[:s._MRU_MAX])
+        s._rebuild_recent_menu()
+
+    def _rebuild_recent_menu(s):
+        if not hasattr(s, "_recent_menu"):
+            return
+        s._recent_menu.clear()
+        recent = s._get_recent()
+        if not recent:
+            empty = QAction("(none)", s); empty.setEnabled(False)
+            s._recent_menu.addAction(empty)
+            return
+        for path in recent:
+            label = os.path.basename(path) + "   " + os.path.dirname(path)
+            a = QAction(label, s)
+            a.triggered.connect(lambda _checked=False, p=path: s._open_project_path(p))
+            s._recent_menu.addAction(a)
+        s._recent_menu.addSeparator()
+        clear = QAction("Clear Recent", s)
+        clear.triggered.connect(s._clear_recent)
+        s._recent_menu.addAction(clear)
+
+    def _clear_recent(s):
+        s._settings().setValue(s._MRU_KEY, [])
+        s._rebuild_recent_menu()
+
+    # ── Status bar ────────────────────────────────────────────────────────
+    def _build_statusbar(s):
+        sb = s.statusBar()
+        sb.setStyleSheet(
+            f"QStatusBar {{ background: {s._BG_PANEL}; border-top: 1px solid {s._BORDER}; "
+            f"color: {s._TEXT_SECONDARY}; font-size: 11px; font-family: monospace; }}"
+            f"QStatusBar QLabel {{ padding: 0 8px; }}"
+            f"QStatusBar::item {{ border: none; }}"
+        )
+        s._sb_map = QLabel("No map loaded")
+        s._sb_coords = QLabel("")
+        s._sb_coords.setMinimumWidth(280)
+        s._sb_worker = QLabel("Idle")
+        s._sb_worker.setStyleSheet("color: #6b7280;")
+        sb.addWidget(s._sb_map, 1)
+        sb.addPermanentWidget(s._sb_coords)
+        sb.addPermanentWidget(s._sb_worker)
+
+    def _update_statusbar_map(s, pgm_path):
+        if not pgm_path or not os.path.isfile(pgm_path):
+            s._sb_map.setText("No map loaded")
+            return
+        try:
+            from core.map_io import parse_pgm, parse_yaml
+            w, h, _ = parse_pgm(pgm_path)
+            yaml_path = pgm_path.replace(".pgm", ".yaml")
+            res = parse_yaml(yaml_path).get("resolution", 0.0) if os.path.isfile(yaml_path) else 0.0
+            s._sb_map.setText(f"{os.path.basename(pgm_path)}   {w}×{h} px   {float(res):.3f} m/px")
+        except Exception:
+            s._sb_map.setText(os.path.basename(pgm_path))
+
+    def _on_hover_coords(s, px, py, wx, wy):
+        s._sb_coords.setText(f"px({px}, {py})   world({wx:+.2f}, {wy:+.2f}) m")
+
+    def _set_worker_status(s, text, busy=False):
+        s._sb_worker.setText(text)
+        color = "#2563eb" if busy else "#6b7280"
+        s._sb_worker.setStyleSheet(f"color: {color};")
+
+    # ── Pipeline stepper ──────────────────────────────────────────────────
+    _STEP_LABELS = ["View PCD", "Build Map", "RII Horizontal", "Analysis", "RII Vertical"]
+
+    def _build_stepper(s):
+        w = StepIndicator(s._STEP_LABELS)
+        w.step_clicked.connect(s._scroll_to_step)
+        w.set_status(0, "active")
+        return w
+
+    def _scroll_to_step(s, idx):
+        if 0 <= idx < len(s._group_boxes):
+            gb = s._group_boxes[idx]
+            area = s._sidebar_scroll
+            # Scroll the sidebar so the group box top aligns with the viewport top
+            if area is not None:
+                y = gb.mapTo(area.widget(), gb.rect().topLeft()).y()
+                area.verticalScrollBar().setValue(max(0, y - 8))
+            s._stepper.set_active(idx)
+
+    # Widget attribute names → (type, getter-hint). Kept in one place so
+    # save/load stay in sync when a new parameter is added.
+    _PROJECT_PARAM_ATTRS = [
+        "e_in", "cb_noise_filter", "filter_radius", "filter_min_nb",
+        "oz1", "oz2", "min_pts_cell", "t_slope", "t_step",
+        "edit_brush_shape", "edit_brush_size", "edit_brush_w", "edit_brush_h",
+        "edit_ref_overlay",
+        "e_pgm", "e_yaml", "e_sem_pcd",
+        "sel_mode", "rii_mode", "planner_combo",
+        "rs", "rw", "rl", "as_", "ar", "aw", "al",
+        "sem_filter",
+        "rv_wall_min_h", "rv_wall_max_h", "rv_voxel", "rv_reach", "rv_angle",
+        "rv_paint_w", "rv_paint_vspan", "rv_sweep", "rv_stride",
+        "rv_max_samples", "rv_wall_ids", "rv_gamma",
+        "_zclip_cb", "_zclip_spin",
+    ]
+
+    def _collect_params(s):
+        from PyQt5.QtWidgets import QCheckBox, QComboBox, QLineEdit, QSpinBox, QDoubleSpinBox
+        out = {}
+        for attr in s._PROJECT_PARAM_ATTRS:
+            w = getattr(s, attr, None)
+            if w is None:
+                continue
+            if isinstance(w, QCheckBox):
+                out[attr] = {"kind": "check", "value": bool(w.isChecked())}
+            elif isinstance(w, QComboBox):
+                out[attr] = {"kind": "combo", "value": w.currentText()}
+            elif isinstance(w, QLineEdit):
+                out[attr] = {"kind": "line", "value": w.text()}
+            elif isinstance(w, QSpinBox):
+                out[attr] = {"kind": "spin_i", "value": int(w.value())}
+            elif isinstance(w, QDoubleSpinBox):
+                out[attr] = {"kind": "spin_f", "value": float(w.value())}
+        return out
+
+    def _apply_params(s, params):
+        from PyQt5.QtWidgets import QCheckBox, QComboBox, QLineEdit, QSpinBox, QDoubleSpinBox
+        for attr, entry in (params or {}).items():
+            w = getattr(s, attr, None)
+            if w is None:
+                continue
+            v = entry.get("value")
+            if isinstance(w, QCheckBox):
+                w.setChecked(bool(v))
+            elif isinstance(w, QComboBox):
+                idx = w.findText(str(v))
+                if idx >= 0:
+                    w.setCurrentIndex(idx)
+            elif isinstance(w, QLineEdit):
+                w.setText(str(v) if v is not None else "")
+            elif isinstance(w, QSpinBox):
+                try: w.setValue(int(v))
+                except (TypeError, ValueError): pass
+            elif isinstance(w, QDoubleSpinBox):
+                try: w.setValue(float(v))
+                except (TypeError, ValueError): pass
+
+    def _collect_artifact_paths(s):
+        return {
+            "pcd_in": s.pcd_in or "",
+            "loaded_map": getattr(s, "_loaded_map_path", "") or "",
+            "pgm": s.e_pgm.text() if hasattr(s, "e_pgm") else "",
+            "yaml": s.e_yaml.text() if hasattr(s, "e_yaml") else "",
+            "sem_pcd": s.e_sem_pcd.text() if hasattr(s, "e_sem_pcd") else "",
+        }
+
+    def _open_project(s):
+        from core.project_io import PROJECT_EXT
+        start = os.path.dirname(s._project_path) if s._project_path else ""
+        f, _ = QFileDialog.getOpenFileName(s, "Open Project", start,
+                                            f"RII Project (*{PROJECT_EXT})")
+        if not f:
+            return
+        s._open_project_path(f)
+
+    def _open_project_path(s, f):
+        from core.project_io import load_project
+        if not os.path.isfile(f):
+            QMessageBox.warning(s, "Open Project", f"File not found:\n{f}")
+            # Drop stale MRU entries
+            recent = [p for p in s._get_recent() if p != f]
+            s._settings().setValue(s._MRU_KEY, recent)
+            s._rebuild_recent_menu()
+            return
+        try:
+            data = load_project(f)
+        except Exception as e:
+            QMessageBox.warning(s, "Open Project", f"Failed to load:\n{e}")
+            return
+        s._apply_params(data.get("params", {}))
+        paths = data.get("paths", {})
+        if paths.get("pcd_in"):
+            s.pcd_in = paths["pcd_in"]
+            if hasattr(s, "e_in"):
+                s.e_in.setText(paths["pcd_in"])
+        pgm = paths.get("pgm") or paths.get("loaded_map")
+        if pgm and os.path.isfile(pgm) and hasattr(s, "_load_map"):
+            s._load_map(pgm)
+            if hasattr(s, "e_pgm"): s.e_pgm.setText(pgm)
+            if paths.get("yaml") and hasattr(s, "e_yaml"):
+                s.e_yaml.setText(paths["yaml"])
+        s._manual_ramps = list(data.get("manual_ramps", []))
+        for t in s._manual_ramps:
+            t._is_manual = True
+        s._ground_result = data.get("ground_result")
+        if s._ground_result is not None:
+            s._on_ground_result(s._ground_result)
+        s._project_path = f
+        s._push_recent(f)
+        s.setWindowTitle(f"Robot Inclusivity Index (RII) — {os.path.basename(f)}")
+        s._log(f"Opened project: {f}", "success")
+
+    def _save_project_as(s):
+        from core.project_io import PROJECT_EXT
+        start = s._project_path or os.path.join(os.path.expanduser("~"), f"untitled{PROJECT_EXT}")
+        f, _ = QFileDialog.getSaveFileName(s, "Save Project As", start,
+                                            f"RII Project (*{PROJECT_EXT})")
+        if not f:
+            return
+        if not f.endswith(PROJECT_EXT):
+            f += PROJECT_EXT
+        s._project_path = f
+        s._save_project()
+
+    def _save_project(s):
+        from core.project_io import build_project_dict, save_project, PROJECT_EXT
+        if not s._project_path:
+            return s._save_project_as()
+        try:
+            data = build_project_dict(
+                params=s._collect_params(),
+                artifact_paths=s._collect_artifact_paths(),
+                manual_ramps=getattr(s, "_manual_ramps", []),
+                ground_result=getattr(s, "_ground_result", None),
+                project_file=s._project_path,
+            )
+            save_project(s._project_path, data)
+        except Exception as e:
+            QMessageBox.warning(s, "Save Project", f"Failed to save:\n{e}")
+            return
+        s._push_recent(s._project_path)
+        s.setWindowTitle(f"Robot Inclusivity Index (RII) — {os.path.basename(s._project_path)}")
+        s._log(f"Saved project: {s._project_path}", "success")
+
+    # ══════════════════════════════════════════════════════════════════════
     # _build — construct all UI widgets
     # ══════════════════════════════════════════════════════════════════════
     def _build(s):
+        s._build_menu()
+        s._build_statusbar()
         cw = QWidget(); s.setCentralWidget(cw)
-        ml = QHBoxLayout(cw); ml.setContentsMargins(0, 0, 0, 0)
-        sp = QSplitter(Qt.Horizontal); sp.setChildrenCollapsible(False); sp.setHandleWidth(8); ml.addWidget(sp)
+        ml = QVBoxLayout(cw); ml.setContentsMargins(0, 0, 0, 0); ml.setSpacing(0)
+        s._stepper = s._build_stepper(); ml.addWidget(s._stepper)
+        sp = QSplitter(Qt.Horizontal); sp.setChildrenCollapsible(False); sp.setHandleWidth(8); ml.addWidget(sp, 1)
 
         ls = DragScrollArea()
         ls.setMinimumWidth(360)
@@ -1183,13 +1590,13 @@ class MainWin(QMainWindow):
         s.b4.clicked.connect(s._step4); l4.addWidget(s.b4)
         s.b4save = QPushButton("Save Map (.pgm + .yaml) As..."); s.b4save.setStyleSheet(s._B_secondary())
         s.b4save.clicked.connect(s._save_map_bundle); l4.addWidget(s.b4save)
-        s.b_ground = QPushButton("Detect Ramps && Steps (RANSAC)"); s.b_ground.setStyleSheet(s._B("#059669"))
+        s.b_ground = QPushButton("Detect Ramps (RANSAC)"); s.b_ground.setStyleSheet(s._B("#059669"))
         s.b_ground.setToolTip(
-            "Run RANSAC ground segmentation to detect ramps and steps.\n"
+            "Run RANSAC ground segmentation to detect ramps.\n"
             "Results are overlaid on the obstacle map:\n"
-            "  Green = robot can pass (within slope/step limits)\n"
+            "  Green = robot can pass (within slope limits)\n"
             "  Red = robot cannot pass (exceeds limits)\n"
-            "Labels show measured angle (ramps) or height (steps)."
+            "Labels show measured angle."
         )
         s.b_ground.clicked.connect(s._run_ground_analysis); l4.addWidget(s.b_ground)
         # ── Ramp Management ──
@@ -1850,6 +2257,8 @@ class MainWin(QMainWindow):
 
         ll.addStretch()
         ls.setWidget(lw); sp.addWidget(ls)
+        s._sidebar_scroll = ls
+        s._group_boxes = [g1, g4, g5, g6, g7]
 
         # RIGHT panel
         rw = QWidget(); rl = QVBoxLayout(rw); rl.setContentsMargins(0, 0, 0, 0); rl.setSpacing(0)
@@ -1932,6 +2341,7 @@ class MainWin(QMainWindow):
         # Primary viewer (always present)
         s.view_stack = QStackedWidget()
         s.mw = MapW(); s.mw.sel_changed.connect(s._on_sel); s.view_stack.addWidget(s.mw)
+        s.mw.hover_coords.connect(s._on_hover_coords)
         s.mw.hover_coords.connect(s._on_hover_coords)
         s.mw.start_picked.connect(s._on_start_picked)
         s.pcw = PointCloudW()
@@ -2037,10 +2447,17 @@ class MainWin(QMainWindow):
         p = s.e_in.text().strip()
         if not os.path.isfile(p): QMessageBox.warning(s, "Error", p); return
         s.b1.setEnabled(False)
+        s._set_worker_status("Loading point cloud…", busy=True)
+        s._stepper.set_active(0)
         w = ViewW(p, "3D Viewer")
         w.log.connect(s._log)
         w.loaded.connect(lambda cloud: s._set_cloud("3D Viewer", cloud))
-        w.done.connect(lambda *_: s.b1.setEnabled(True))
+        def _d(ok, _msg):
+            s.b1.setEnabled(True)
+            s._set_worker_status("Idle")
+            if ok:
+                s._stepper.set_status(0, "complete")
+        w.done.connect(_d)
         s._wk.append(w); w.start()
 
     def _step2(s):
@@ -2166,16 +2583,22 @@ class MainWin(QMainWindow):
         )
         w = MapBuildW(p, sd, mz, xz, s.t_slope.value(), s.t_step.value(), v3_mode=s._v3_mode, min_points_per_cell=s.min_pts_cell.value())
         w.log.connect(s._log); w.prog.connect(s.prog.setValue)
+        s._set_worker_status("Building 2D map…", busy=True)
+        s._stepper.set_active(1)
         def done(ok, msg):
             s.b4.setEnabled(True)
+            s._set_worker_status("Idle")
             if ok:
                 pgm = os.path.join(sd, "map.pgm"); s.e_pgm.setText(pgm)
                 yml = os.path.join(sd, "map.yaml"); s.e_yaml.setText(yml)
                 s._log(f"Map: {pgm}", "success")
                 if os.path.isfile(pgm): s._load_map(pgm)
+                s._stepper.set_status(1, "complete")
+            else:
+                s._stepper.set_status(1, "pending")
         w.done.connect(done); s._wk.append(w); w.start()
 
-    # ── Ground Analysis (RANSAC ramp/step detection) ──
+    # ── Ground Analysis (RANSAC ramp detection) ──
     def _run_ground_analysis(s):
         p = s.e_in.text().strip()
         if not os.path.isfile(p):
@@ -2189,9 +2612,11 @@ class MainWin(QMainWindow):
         w.log.connect(s._log)
         w.prog.connect(s.prog.setValue)
         w.result_ready.connect(s._on_ground_result)
+        s._set_worker_status("Detecting ramps (RANSAC)…", busy=True)
 
         def done(ok, msg):
             s.b_ground.setEnabled(True)
+            s._set_worker_status("Idle")
             if ok:
                 s._log("Ground analysis complete.", "success")
             else:
