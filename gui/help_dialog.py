@@ -8,8 +8,9 @@ from PyQt5.QtWidgets import (
 )
 
 
+from config import APP_VERSION
+
 APP_NAME = "Robot Inclusivity Index (RII)"
-APP_VERSION = "2.0"
 
 
 _GUIDE_SECTIONS = [

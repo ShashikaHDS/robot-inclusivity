@@ -172,6 +172,9 @@ class MainWin(QMainWindow):
         s._log(s._viewer_backend_startup_message(), "info" if PYQTGRAPH_GL_AVAILABLE else "warn")
         s._log(f"Session cache: {s._cache_root}", "info")
         s._log("Pipeline ready. Steps 1→6.", "info")
+        # Background update check — fires 5s after launch so it doesn't block
+        # the window from appearing. Silent when no update / no internet.
+        QTimer.singleShot(5000, s._startup_update_check)
 
     def _viewer_backend_startup_message(s):
         if PYQTGRAPH_GL_AVAILABLE:
@@ -1251,6 +1254,9 @@ class MainWin(QMainWindow):
         a_keys = QAction(st.standardIcon(QStyle.SP_FileDialogContentsView), "&Keyboard Shortcuts", s)
         a_keys.triggered.connect(s._show_shortcuts); h.addAction(a_keys)
         h.addSeparator()
+        a_update = QAction(st.standardIcon(QStyle.SP_BrowserReload), "Check for &Updates…", s)
+        a_update.triggered.connect(s._check_for_updates); h.addAction(a_update)
+        h.addSeparator()
         a_about = QAction(st.standardIcon(QStyle.SP_MessageBoxInformation), "&About", s)
         a_about.triggered.connect(s._show_about); h.addAction(a_about)
 
@@ -1265,6 +1271,17 @@ class MainWin(QMainWindow):
     def _show_about(s):
         from gui.help_dialog import AboutDialog
         AboutDialog(s).exec_()
+
+    def _check_for_updates(s, silent=False):
+        from gui.update_dialog import check_and_prompt
+        check_and_prompt(s, silent=silent)
+
+    def _startup_update_check(s):
+        """Silent background check on launch — only notifies if an update exists."""
+        try:
+            s._check_for_updates(silent=True)
+        except Exception as e:  # noqa: BLE001
+            s._log(f"[Update] Background check failed: {e}", "warn")
 
     def _settings(s):
         return QSettings("rii_pipeline", "rii_pipeline")

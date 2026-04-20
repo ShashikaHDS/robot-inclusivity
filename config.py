@@ -7,6 +7,10 @@ import sys
 from pathlib import Path
 
 
+APP_VERSION = "2.0"
+GITHUB_REPO = "ShashikaHDS/Teal-Robot"  # owner/repo — used by the updater
+UPDATE_ASSET_PREFIX = "RII_Pipeline_Setup"  # matches the Inno Setup output name
+
 IS_WINDOWS = sys.platform == "win32"
 
 WORKSPACE = str(Path(__file__).resolve().parent)

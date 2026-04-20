@@ -87,7 +87,32 @@ That single file is everything you ship. Upload it to GitHub Releases, email it,
 
 ---
 
-## 4. What the end user sees
+## 4. Cutting a GitHub Release (enables in-app updates)
+
+The app's **Help → Check for Updates…** action queries the GitHub Releases API on `ShashikaHDS/Teal-Robot` for the newest tagged release and offers to download + install it. For that to work, you need to publish a release with the built `.exe` attached:
+
+1. **Bump the version** in [`config.py`](config.py): `APP_VERSION = "2.1"`. Also bump `MyAppVersion` in [`installer.iss`](installer.iss) to match.
+2. **Build** the installer on Windows (`BUILD.bat`), producing `Output\RII_Pipeline_Setup_2.1.exe`.
+3. **Tag the commit** on the branch that produced the build:
+   ```bash
+   git tag v2.1 -m "Release 2.1"
+   git push origin v2.1
+   ```
+4. On GitHub, go to **Releases → Draft a new release**:
+   - Tag: `v2.1` (choose the existing tag)
+   - Title: `RII Pipeline 2.1`
+   - Description: write release notes in Markdown (bullets, headings — the updater dialog renders them inline)
+   - Attach `RII_Pipeline_Setup_2.1.exe` as a binary asset
+   - Click *Publish release*
+5. Any running copy of the app — on the next *Check for Updates* click or next startup (5 s after launch, silent) — will see the new version, show the release notes, and offer to download + install.
+
+The updater matches assets whose filename starts with `RII_Pipeline_Setup` and ends with `.exe`. That's configurable via `UPDATE_ASSET_PREFIX` in `config.py`.
+
+> **Tip:** automate steps 2 and 4 with GitHub Actions. The CI workflow in §6 builds on every push; extend it to attach the artifact to a release on every `v*` tag push so all you have to do is `git tag v2.1 && git push --tags`.
+
+---
+
+## 5. What the end user sees
 
 A user downloads `RII_Pipeline_Setup_2.0.exe` and double-clicks it. They get:
 
@@ -102,7 +127,7 @@ On uninstall, the session cache under `%TEMP%\rii_pipeline_cache` is cleaned up 
 
 ---
 
-## 5. Version bumps
+## 6. Version bumps
 
 When you ship a new version, edit **two** constants in `installer.iss`:
 
@@ -114,7 +139,7 @@ Keep the `AppId` GUID the same — that's what tells Windows it's an upgrade of 
 
 ---
 
-## 6. Tradeoffs & optional polish
+## 7. Tradeoffs & optional polish
 
 ### Current install size
 Roughly **200–250 MB** on disk. Biggest contributors: PyQt5 (~60 MB), numpy + numba + scipy (~80 MB), PyOpenGL + pyqtgraph (~30 MB).
@@ -162,7 +187,7 @@ Flip this on once you have a release cadence — every push produces a downloada
 
 ---
 
-## 7. Troubleshooting
+## 8. Troubleshooting
 
 | Symptom | Cause | Fix |
 |---|---|---|
