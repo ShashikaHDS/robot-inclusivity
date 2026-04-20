@@ -1,5 +1,7 @@
 """RII Horizontal — inflation, BFS reachability, path planners, coverage computation."""
 
+from __future__ import annotations
+
 import os
 import sys
 import time

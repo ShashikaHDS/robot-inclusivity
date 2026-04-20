@@ -1,5 +1,7 @@
 """Main application window — MainWin."""
 
+from __future__ import annotations
+
 import os
 import sys
 import math
