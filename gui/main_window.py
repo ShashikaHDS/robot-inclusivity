@@ -1707,26 +1707,12 @@ class MainWin(QMainWindow):
             l4.addWidget(QLabel("V3: max_slope = steepest ramp, max_step = min obstacle height (steps below this are ignored)."))
         else:
             l4.addWidget(QLabel("Terrain thresholds for traversability: max_slope = steepest ramp, max_step = tallest climbable step."))
-        # ── Multi-level processing (auto-detect floors) ──
-        ml_row = QHBoxLayout()
-        s.cb_multi_level = QCheckBox("Per-level processing")
+        s.cb_multi_level = QCheckBox("Multi-floor building (auto-detect)")
         s.cb_multi_level.setToolTip(
-            "Auto-detect multiple floor levels via Z-histogram and build\n"
-            "a separate map per level (map_level0, map_level1, …). Use for\n"
-            "multi-storey buildings. Each map uses absolute Z bounds for\n"
-            "its slab. The lowest level is loaded into the view."
+            "Tick this if your scan covers more than one floor.\n"
+            "Step 2 will auto-detect levels and build one map per floor."
         )
-        ml_row.addWidget(s.cb_multi_level)
-        s.b_detect_levels = QPushButton("Detect Levels")
-        s.b_detect_levels.setStyleSheet(s._B_secondary())
-        s.b_detect_levels.setToolTip(
-            "Preview floor-level detection without building maps. Shows a\n"
-            "summary in the log so you can verify before running Step 2."
-        )
-        s.b_detect_levels.clicked.connect(s._preview_levels)
-        ml_row.addWidget(s.b_detect_levels)
-        ml_row.addStretch()
-        l4.addLayout(ml_row)
+        l4.addWidget(s.cb_multi_level)
 
         s.b4 = QPushButton("Generate 2D Map"); s.b4.setStyleSheet(s._B("#aa66ff"))
         s.b4.clicked.connect(s._step4); l4.addWidget(s.b4)
@@ -2753,28 +2739,6 @@ class MainWin(QMainWindow):
                 s._stepper.set_status(1, "pending")
                 s._group_boxes[1].setStatus("pending")
         w.done.connect(done); s._wk.append(w); w.start()
-
-    def _preview_levels(s):
-        """Run level detection on the selected PCD and log a summary."""
-        from core.level_detection import detect_floor_levels, summarize_levels
-        try:
-            p, _label = s._selected_map_source_path()
-        except FileNotFoundError as exc:
-            QMessageBox.warning(s, "Error", str(exc)); return
-        s._log("Detecting floor levels (Z-histogram)…", "info")
-        try:
-            pts = load_xyz_points(p)
-            levels = detect_floor_levels(pts)
-        except Exception as e:
-            s._log(f"[Levels] Detection failed: {e}", "warn"); return
-        s._log(summarize_levels(levels), "info")
-        if len(levels) <= 1:
-            s._log(
-                "[Levels] Only one level found — Per-level processing will produce "
-                "the same result as a normal build. Widen max_z if you know there "
-                "are more floors.",
-                "warn",
-            )
 
     def _step4_multilevel(s, pcd_path, sd):
         """Detect levels, then chain one MapBuildW per level sequentially."""
