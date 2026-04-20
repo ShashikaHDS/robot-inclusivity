@@ -13,6 +13,7 @@ build/
 
 # Windows build kit (regenerate with package_for_windows.py)
 windows_build_kit/
+windows_build_kit.zip
 Output/
 
 # IDE

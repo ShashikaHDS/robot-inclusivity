@@ -11,14 +11,17 @@ Output folder: windows_build_kit/
 
 from __future__ import annotations
 
+import argparse
 import os
 import shutil
 import sys
+import zipfile
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent
 KIT = ROOT / "windows_build_kit"
+ZIP_PATH = ROOT / "windows_build_kit.zip"
 
 # Files to copy verbatim into the kit (relative to ROOT)
 FILES_TO_COPY = [
@@ -33,6 +36,12 @@ FILES_TO_COPY = [
     "icon.png",
     "README_WINDOWS.md",
     "README.md",
+    # Windows-specific helpers (live at repo root so `git clone` on
+    # Windows gives you BUILD.bat directly; they also go into the kit)
+    "BUILD.bat",
+    "INSTALL_DEPS.bat",
+    "RUN_DEV.bat",
+    "README_FIRST.txt",
 ]
 
 # Directories to copy (relative to ROOT). Python cache and editor junk are
@@ -81,191 +90,41 @@ def copy_tree(name: str) -> bool:
     return True
 
 
-def write_text(relpath: str, content: str) -> None:
-    path = KIT / relpath
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # Windows-friendly: CRLF line endings so Notepad renders correctly
-    path.write_text(content.replace("\n", "\r\n"), encoding="utf-8")
-    print(f"  + wrote  {relpath}")
 
 
-BUILD_BAT = r"""@echo off
-setlocal enabledelayedexpansion
-title RII Pipeline - Build installer
-echo.
-echo =========================================================
-echo   RII Pipeline - Windows installer builder
-echo =========================================================
-echo.
-
-:: Check Python
-where python >nul 2>nul
-if errorlevel 1 (
-    echo [ERROR] Python was not found on PATH.
-    echo Install Python 3.10 or 3.11 from https://www.python.org/downloads/
-    echo Tick "Add Python to PATH" during install, then re-run BUILD.bat.
-    pause
-    exit /b 1
-)
-for /f "tokens=*" %%v in ('python --version 2^>^&1') do echo Using %%v
-
-:: Step 1 - install Python dependencies
-echo.
-echo [1/3] Installing Python dependencies...
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt pyinstaller
-if errorlevel 1 (
-    echo [ERROR] pip install failed.
-    pause
-    exit /b 1
-)
-
-:: Step 2 - build the standalone app folder via PyInstaller
-echo.
-echo [2/3] Building standalone application folder...
-python build_windows.py
-if errorlevel 1 (
-    echo [ERROR] PyInstaller build failed.
-    pause
-    exit /b 1
-)
-
-:: Step 3 - build the installer via Inno Setup (optional but recommended)
-echo.
-echo [3/3] Building Windows installer (Inno Setup)...
-set "ISCC=C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
-if not exist "%ISCC%" set "ISCC=C:\Program Files\Inno Setup 6\ISCC.exe"
-if not exist "%ISCC%" (
-    echo [WARN]  Inno Setup 6 not found. Skipping installer build.
-    echo         Install from https://jrsoftware.org/isdl.php and re-run.
-    echo         The portable app folder is still available at dist\RII_Pipeline\
-    echo         You can zip and distribute that folder as-is.
-    pause
-    exit /b 0
-)
-"%ISCC%" installer.iss
-if errorlevel 1 (
-    echo [ERROR] Inno Setup compilation failed.
-    pause
-    exit /b 1
-)
-
-echo.
-echo =========================================================
-echo   Build complete!
-echo =========================================================
-echo   Portable folder:  dist\RII_Pipeline\
-echo   Installer .exe:   Output\RII_Pipeline_Setup_2.0.exe
-echo.
-echo   Double-click the installer to install the app, or zip
-echo   the dist folder for a no-install portable distribution.
-echo =========================================================
-pause
-"""
-
-INSTALL_DEPS_BAT = r"""@echo off
-title RII Pipeline - Install dependencies
-echo Installing Python dependencies...
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt pyinstaller
-if errorlevel 1 (
-    echo [ERROR] pip install failed.
-    pause
-    exit /b 1
-)
-echo.
-echo Done.
-pause
-"""
-
-RUN_DEV_BAT = r"""@echo off
-title RII Pipeline - Run from source
-cd /d "%~dp0"
-python rii_pipeline.py
-pause
-"""
-
-README_FIRST = """RII Pipeline - Windows Build Kit
-================================
-
-This folder contains everything needed to build and install the RII
-Pipeline on Windows 10 or 11. No ROS, no Linux tools required.
-
-
-QUICK START (one-time setup)
-----------------------------
-
-1. Install Python 3.10 or 3.11 (64-bit):
-   https://www.python.org/downloads/windows/
-   -> IMPORTANT: tick "Add Python to PATH" during install.
-
-2. Install Inno Setup 6 (needed only for the installer step):
-   https://jrsoftware.org/isdl.php
-   Accept defaults.
-
-3. Double-click BUILD.bat in this folder.
-   It will:
-     - install Python dependencies (numpy, PyQt5, etc.)
-     - build the standalone app via PyInstaller
-     - build the Windows installer (RII_Pipeline_Setup_2.0.exe)
-
-   The first run takes 5-10 minutes. Re-runs are faster.
-
-
-BUILD OUTPUT
-------------
-
-After BUILD.bat completes:
-
-  dist\\RII_Pipeline\\RII_Pipeline.exe
-     --> The portable app. Zip this folder to distribute without an
-         installer. Users unzip and double-click the .exe.
-
-  Output\\RII_Pipeline_Setup_2.0.exe
-     --> The proper installer. Users double-click this, click Next a
-         few times, and the app is installed to Program Files with a
-         Start Menu shortcut and .riiproj file association.
-
-
-OTHER BATCH FILES
------------------
-
-  INSTALL_DEPS.bat
-     Install just the Python dependencies. Useful if you only want to
-     run from source without building an installer.
-
-  RUN_DEV.bat
-     Launch the app directly from source (no build step). Requires
-     INSTALL_DEPS.bat to have been run first. Good for development
-     and quick smoke tests.
-
-
-FULL DOCUMENTATION
-------------------
-
-See README_WINDOWS.md in this folder for:
-  - detailed build troubleshooting
-  - code-signing guidance (SmartScreen)
-  - per-user vs. all-users install
-  - GitHub Actions CI workflow
-  - distribution options
-
-
-FIRST-TIME SMARTSCREEN WARNING
--------------------------------
-
-The installer is unsigned. When a user runs it for the first time,
-Windows SmartScreen may show a blue screen saying:
-
-   "Windows protected your PC"
-
-Tell the user to click "More info" then "Run anyway". This is only
-on the first download of each version. For production deployments,
-obtain a code-signing certificate (~$100/year) - see README_WINDOWS.md.
-"""
+def make_zip() -> Path:
+    """Create windows_build_kit.zip from the kit folder."""
+    if ZIP_PATH.exists():
+        ZIP_PATH.unlink()
+    print(f"Creating zip at: {ZIP_PATH}")
+    with zipfile.ZipFile(ZIP_PATH, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
+        for root, dirs, files in os.walk(KIT):
+            dirs[:] = [d for d in dirs if d not in _IGNORE_NAMES]
+            for f in files:
+                if f.endswith(_IGNORE_SUFFIXES):
+                    continue
+                full = Path(root) / f
+                arc = full.relative_to(ROOT)
+                zf.write(full, arc)
+    return ZIP_PATH
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--no-zip", action="store_true",
+                        help="skip the zip step, only create the folder")
+    parser.add_argument("--zip-only", action="store_true",
+                        help="skip folder creation, only rebuild the zip from an existing kit")
+    args = parser.parse_args()
+
+    if args.zip_only:
+        if not KIT.exists():
+            print(f"[ERROR] {KIT} does not exist. Run without --zip-only first.")
+            return 1
+        z = make_zip()
+        print(f"\nZip ready: {z}  ({z.stat().st_size / 1024:.0f} KB)")
+        return 0
+
     if KIT.exists():
         print(f"Removing existing kit at {KIT}")
         shutil.rmtree(KIT)
@@ -282,13 +141,6 @@ def main() -> int:
         copy_tree(name)
     print()
 
-    print("Writing Windows helper scripts…")
-    write_text("BUILD.bat", BUILD_BAT)
-    write_text("INSTALL_DEPS.bat", INSTALL_DEPS_BAT)
-    write_text("RUN_DEV.bat", RUN_DEV_BAT)
-    write_text("README_FIRST.txt", README_FIRST)
-    print()
-
     # Compute total size
     total = 0
     files = 0
@@ -299,14 +151,23 @@ def main() -> int:
                 files += 1
             except OSError:
                 pass
+    zip_info = ""
+    if not args.no_zip:
+        print()
+        z = make_zip()
+        zip_kb = z.stat().st_size / 1024
+        zip_info = f"  Kit zip:   {z}  ({zip_kb:.0f} KB)\n"
+
+    print()
     print("=" * 58)
-    print(f"  Kit ready: {KIT}")
-    print(f"  {files} files, {total / (1024 * 1024):.1f} MB")
+    print(f"  Kit ready: {KIT}  ({files} files, {total / (1024 * 1024):.1f} MB)")
+    if zip_info:
+        print(zip_info, end="")
     print()
     print("  Next steps:")
-    print(f"    1. Copy the entire '{KIT.name}' folder to a Windows 11 PC.")
-    print(f"    2. Read README_FIRST.txt inside the folder.")
-    print(f"    3. Double-click BUILD.bat.")
+    print(f"    1. Copy {'the zip' if zip_info else f'the {KIT.name} folder'} to a Windows 11 PC.")
+    print("    2. Unzip (if needed) and read README_FIRST.txt.")
+    print("    3. Double-click BUILD.bat.")
     print("=" * 58)
     return 0
 
