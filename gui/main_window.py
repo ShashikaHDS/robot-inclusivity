@@ -169,6 +169,9 @@ class MainWin(QMainWindow):
         s._rv_wall_segments = []
         s._rv_focused_wall_id = None
         s._project_path = None
+        s._active_level = None          # None = unknown / single-floor
+        s._level_pgm_map = {}           # {level_index: pgm_path}
+        s._level_results = {}           # {level_index: {'ref':…, 'act':…, 'anchor_z':…}}
         s._log(s._viewer_backend_startup_message(), "info" if PYQTGRAPH_GL_AVAILABLE else "warn")
         s._log(f"Session cache: {s._cache_root}", "info")
         s._log("Pipeline ready. Steps 1→6.", "info")
@@ -1040,6 +1043,78 @@ class MainWin(QMainWindow):
         if current in ("3D Viewer", "Clean Cloud"):
             s._switch_view(current)
 
+    # ── Multi-floor helpers ──────────────────────────────────────────────
+    @staticmethod
+    def _level_from_path(pgm_path: str):
+        """Extract the level index from a filename like 'map_level2.pgm'."""
+        import re
+        if not pgm_path:
+            return None
+        m = re.search(r"map_level(\d+)\.pgm$", os.path.basename(pgm_path))
+        return int(m.group(1)) if m else None
+
+    def _scan_floors(s, base_pgm: str):
+        """Find all map_level*.pgm siblings of `base_pgm`, populate the combo."""
+        s._level_pgm_map = {}
+        if not base_pgm:
+            return
+        d = os.path.dirname(base_pgm)
+        if not os.path.isdir(d):
+            return
+        import re
+        for fn in sorted(os.listdir(d)):
+            m = re.match(r"map_level(\d+)\.pgm$", fn)
+            if m:
+                s._level_pgm_map[int(m.group(1))] = os.path.join(d, fn)
+        s._refresh_floor_combo()
+
+    def _refresh_floor_combo(s):
+        if not hasattr(s, "floor_combo"):
+            return
+        s.floor_combo.blockSignals(True)
+        s.floor_combo.clear()
+        for idx in sorted(s._level_pgm_map):
+            s.floor_combo.addItem(f"Level {idx}", idx)
+        s.floor_combo.blockSignals(False)
+        multi = len(s._level_pgm_map) > 1
+        s._floor_row.setVisible(multi)
+        s._sync_floor_combo_selection()
+
+    def _sync_floor_combo_selection(s):
+        if not hasattr(s, "floor_combo") or s._active_level is None:
+            return
+        for i in range(s.floor_combo.count()):
+            if s.floor_combo.itemData(i) == s._active_level:
+                s.floor_combo.blockSignals(True)
+                s.floor_combo.setCurrentIndex(i)
+                s.floor_combo.blockSignals(False)
+                return
+
+    def _on_floor_changed(s, _row: int):
+        if s.floor_combo.currentIndex() < 0:
+            return
+        idx = s.floor_combo.currentData()
+        pgm = s._level_pgm_map.get(idx)
+        if not pgm or not os.path.isfile(pgm):
+            return
+        s.e_pgm.setText(pgm)
+        yml = pgm.replace(".pgm", ".yaml")
+        if os.path.isfile(yml):
+            s.e_yaml.setText(yml)
+        s._load_map(pgm)
+        s._log(f"[Floor] Switched to Level {idx}: {os.path.basename(pgm)}", "info")
+
+    def _stash_level_result(s, kind: str, r: dict):
+        """Store a Step 3 result under the active level's slot. kind is 'ref' or 'act'."""
+        if s._active_level is None:
+            return
+        bucket = s._level_results.setdefault(s._active_level, {})
+        bucket[kind] = r
+
+    def _show_combined_rii(s):
+        from gui.combined_rii_dialog import CombinedRiiDialog
+        CombinedRiiDialog(s._level_pgm_map, s._level_results, s).exec_()
+
     def _load_map(s, pgm):
         previous_size = (s._map_w, s._map_h)
         w, h, pixels = parse_pgm(pgm)
@@ -1055,6 +1130,8 @@ class MainWin(QMainWindow):
         ):
             s._clear_step5_results("Loaded a different map. Rerun Step 3 on the current map.")
         s._loaded_map_path = pgm
+        s._active_level = s._level_from_path(pgm)
+        s._scan_floors(pgm)
         s._update_statusbar_map(pgm)
         yaml_guess = pgm.replace(".pgm", ".yaml")
         if os.path.isfile(yaml_guess):
@@ -1840,6 +1917,23 @@ class MainWin(QMainWindow):
         s.e_yaml = QLineEdit(""); s.e_yaml.setPlaceholderText("Auto from .pgm path or browse")
         by = s._mk_browse_btn("Browse for .yaml file", s._browse_yaml)
         hy.addWidget(QLabel(".yaml:")); hy.addWidget(s.e_yaml, 1); hy.addWidget(by); l5.addLayout(hy)
+
+        # ── Floor switcher (shown only when multi-floor maps exist) ──
+        s._floor_row = QWidget()
+        fr = QHBoxLayout(s._floor_row); fr.setContentsMargins(0, 0, 0, 0)
+        fr.addWidget(QLabel("Floor:"))
+        s.floor_combo = QComboBox()
+        s.floor_combo.setToolTip("Switch between floors built in Step 2. "
+                                 "Changes the active map for Steps 3–5.")
+        s.floor_combo.currentIndexChanged.connect(s._on_floor_changed)
+        fr.addWidget(s.floor_combo, 1)
+        s.b_combined_rii = QPushButton("Combined RII"); s.b_combined_rii.setStyleSheet(s._B_secondary())
+        s.b_combined_rii.setToolTip("Summary of per-floor RII results + "
+                                    "area-weighted combined building RII.")
+        s.b_combined_rii.clicked.connect(s._show_combined_rii)
+        fr.addWidget(s.b_combined_rii)
+        s._floor_row.hide()   # only show when >1 floor is available
+        l5.addWidget(s._floor_row)
 
         sh = QHBoxLayout()
         sh.addWidget(QLabel("Selection:"))
@@ -3342,6 +3436,7 @@ class MainWin(QMainWindow):
         if r:
             r["pgm_path"] = pgm
             s.ref_r = r
+            s._stash_level_result("ref", r)
             s.lref.setText(f"Ref: {s._result_area(r):.2f} m²")
             s.lref_note.setText(s._coverage_start_note(r))
             # Render coverage — v3 uses obstacle map pixels directly
@@ -3419,6 +3514,7 @@ class MainWin(QMainWindow):
         if r:
             r["pgm_path"] = pgm
             s.act_r = r
+            s._stash_level_result("act", r)
             s.lact.setText(f"Actual: {s._result_area(r):.2f} m²")
             s.lact_note.setText(s._coverage_start_note(r))
             if s._v3_mode:
