@@ -173,6 +173,11 @@ _SHORTCUTS = [
         ("Drag rectangle", "Select ramp / region (when a Select mode is active)"),
         ("Shift + drag", "Freeform polygon selection (when enabled)"),
     ]),
+    ("Map Editing (brush)", [
+        ("Ctrl+Z", "Undo last brush stroke"),
+        ("Ctrl+Shift+Z", "Redo last undone stroke"),
+        ("Ctrl+Y", "Redo (alternative)"),
+    ]),
     ("Help", [
         ("F1", "Open User Guide"),
     ]),

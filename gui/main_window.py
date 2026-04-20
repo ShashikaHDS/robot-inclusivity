@@ -27,7 +27,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QRect, QSettings
 from PyQt5.QtGui import QImage, QColor, QIcon, QKeySequence
-from PyQt5.QtWidgets import QAction
+from PyQt5.QtWidgets import QAction, QShortcut
 
 from config import (
     DEFAULT_PCD_IN as DEF_IN,
@@ -2569,6 +2569,16 @@ class MainWin(QMainWindow):
         s.view_stack = QStackedWidget()
         s.mw = MapW(); s.mw.sel_changed.connect(s._on_sel); s.view_stack.addWidget(s.mw)
         s.mw.hover_coords.connect(s._on_hover_coords)
+
+        # Undo / redo for map edits (brush)
+        for keys in (QKeySequence.Undo, "Ctrl+Z"):
+            sc = QShortcut(QKeySequence(keys), s)
+            sc.setContext(Qt.ApplicationShortcut)
+            sc.activated.connect(s._undo_edit)
+        for keys in (QKeySequence.Redo, "Ctrl+Y", "Ctrl+Shift+Z"):
+            sc = QShortcut(QKeySequence(keys), s)
+            sc.setContext(Qt.ApplicationShortcut)
+            sc.activated.connect(s._redo_edit)
         s.mw.hover_coords.connect(s._on_hover_coords)
         s.mw.start_picked.connect(s._on_start_picked)
         s.pcw = PointCloudW()
@@ -3244,6 +3254,16 @@ class MainWin(QMainWindow):
             s._refresh_ramp_overlay()
 
     # ── Traversability Map Editing ──
+    def _undo_edit(s):
+        if hasattr(s, "mw") and s.mw.undo_edit():
+            s._set_worker_status("Undo", busy=False)
+            QTimer.singleShot(800, lambda: s._set_worker_status("Idle"))
+
+    def _redo_edit(s):
+        if hasattr(s, "mw") and s.mw.redo_edit():
+            s._set_worker_status("Redo", busy=False)
+            QTimer.singleShot(800, lambda: s._set_worker_status("Idle"))
+
     def _toggle_edit_mode(s, mode):
         """Activate draw/erase editing on the map."""
         pgm = s.e_pgm.text()

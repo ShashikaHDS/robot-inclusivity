@@ -83,6 +83,10 @@ class MapW(QWidget):
         s._edit_overlay = None
         s._edit_strokes = []
         s._last_edit_pt = None
+        # Undo / redo for brush edits (snapshot of _edit_overlay per stroke)
+        s._edit_undo = []
+        s._edit_redo = []
+        s._edit_undo_cap = 20
         s._ref_overlay = None
         s._ref_overlay_visible = False
         s._transition_overlay = None   # QImage for ramp/step overlay
@@ -152,11 +156,48 @@ class MapW(QWidget):
             h, w = s._bp.height(), s._bp.width()
             s._edit_overlay = np.full((h, w), 127, dtype=np.uint8)
         s._edit_active = True
+        s._edit_undo.clear(); s._edit_redo.clear()
         s._update_cursor()
+
     def disable_edit(s):
         s._edit_active = False
+        s._edit_undo.clear(); s._edit_redo.clear()
         s._update_cursor()
         s.update()
+
+    # ── Undo / redo for brush edits ─────────────────────────────────────
+    def _snapshot_edit(s):
+        """Push the current overlay onto the undo stack (called before each stroke)."""
+        if s._edit_overlay is None:
+            return
+        s._edit_undo.append(s._edit_overlay.copy())
+        if len(s._edit_undo) > s._edit_undo_cap:
+            s._edit_undo.pop(0)
+        s._edit_redo.clear()
+
+    def undo_edit(s) -> bool:
+        """Restore the previous edit-overlay snapshot. Returns True on success."""
+        if not s._edit_active or s._edit_overlay is None or not s._edit_undo:
+            return False
+        s._edit_redo.append(s._edit_overlay.copy())
+        s._edit_overlay = s._edit_undo.pop()
+        s.update()
+        return True
+
+    def redo_edit(s) -> bool:
+        """Re-apply the last undone stroke."""
+        if not s._edit_active or s._edit_overlay is None or not s._edit_redo:
+            return False
+        s._edit_undo.append(s._edit_overlay.copy())
+        s._edit_overlay = s._edit_redo.pop()
+        s.update()
+        return True
+
+    def can_undo_edit(s) -> bool:
+        return s._edit_active and bool(s._edit_undo)
+
+    def can_redo_edit(s) -> bool:
+        return s._edit_active and bool(s._edit_redo)
     def get_edit_overlay(s):
         return s._edit_overlay
     def set_edit_mode(s, mode):
@@ -302,6 +343,7 @@ class MapW(QWidget):
             if pt:
                 s._drag_mode = "edit"
                 s._last_edit_pt = pt
+                s._snapshot_edit()   # push pre-stroke snapshot onto undo stack
                 s._paint_brush(pt[0], pt[1])
             return
         if s._sm and e.button() == Qt.LeftButton:
