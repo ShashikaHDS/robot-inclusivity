@@ -1402,6 +1402,7 @@ class MainWin(QMainWindow):
     _PROJECT_PARAM_ATTRS = [
         "e_in", "cb_noise_filter", "filter_radius", "filter_min_nb",
         "oz1", "oz2", "min_pts_cell", "t_slope", "t_step",
+        "cb_multi_level",
         "edit_brush_shape", "edit_brush_size", "edit_brush_w", "edit_brush_h",
         "edit_ref_overlay",
         "e_pgm", "e_yaml", "e_sem_pcd",
@@ -1706,6 +1707,27 @@ class MainWin(QMainWindow):
             l4.addWidget(QLabel("V3: max_slope = steepest ramp, max_step = min obstacle height (steps below this are ignored)."))
         else:
             l4.addWidget(QLabel("Terrain thresholds for traversability: max_slope = steepest ramp, max_step = tallest climbable step."))
+        # ── Multi-level processing (auto-detect floors) ──
+        ml_row = QHBoxLayout()
+        s.cb_multi_level = QCheckBox("Per-level processing")
+        s.cb_multi_level.setToolTip(
+            "Auto-detect multiple floor levels via Z-histogram and build\n"
+            "a separate map per level (map_level0, map_level1, …). Use for\n"
+            "multi-storey buildings. Each map uses absolute Z bounds for\n"
+            "its slab. The lowest level is loaded into the view."
+        )
+        ml_row.addWidget(s.cb_multi_level)
+        s.b_detect_levels = QPushButton("Detect Levels")
+        s.b_detect_levels.setStyleSheet(s._B_secondary())
+        s.b_detect_levels.setToolTip(
+            "Preview floor-level detection without building maps. Shows a\n"
+            "summary in the log so you can verify before running Step 2."
+        )
+        s.b_detect_levels.clicked.connect(s._preview_levels)
+        ml_row.addWidget(s.b_detect_levels)
+        ml_row.addStretch()
+        l4.addLayout(ml_row)
+
         s.b4 = QPushButton("Generate 2D Map"); s.b4.setStyleSheet(s._B("#aa66ff"))
         s.b4.clicked.connect(s._step4); l4.addWidget(s.b4)
         s.b4save = QPushButton("Save Map (.pgm + .yaml) As..."); s.b4save.setStyleSheet(s._B_secondary())
@@ -2707,6 +2729,12 @@ class MainWin(QMainWindow):
             f"Generating Step 2 map from the {src_label}: {os.path.basename(p)}",
             "info",
         )
+
+        # Branch: multi-level vs. single-level build
+        if hasattr(s, "cb_multi_level") and s.cb_multi_level.isChecked():
+            s._step4_multilevel(p, sd)
+            return
+
         w = MapBuildW(p, sd, mz, xz, s.t_slope.value(), s.t_step.value(), v3_mode=s._v3_mode, min_points_per_cell=s.min_pts_cell.value())
         w.log.connect(s._log); w.prog.connect(s.prog.setValue)
         s._set_worker_status("Building 2D map…", busy=True)
@@ -2725,6 +2753,109 @@ class MainWin(QMainWindow):
                 s._stepper.set_status(1, "pending")
                 s._group_boxes[1].setStatus("pending")
         w.done.connect(done); s._wk.append(w); w.start()
+
+    def _preview_levels(s):
+        """Run level detection on the selected PCD and log a summary."""
+        from core.level_detection import detect_floor_levels, summarize_levels
+        try:
+            p, _label = s._selected_map_source_path()
+        except FileNotFoundError as exc:
+            QMessageBox.warning(s, "Error", str(exc)); return
+        s._log("Detecting floor levels (Z-histogram)…", "info")
+        try:
+            pts = load_xyz_points(p)
+            levels = detect_floor_levels(pts)
+        except Exception as e:
+            s._log(f"[Levels] Detection failed: {e}", "warn"); return
+        s._log(summarize_levels(levels), "info")
+        if len(levels) <= 1:
+            s._log(
+                "[Levels] Only one level found — Per-level processing will produce "
+                "the same result as a normal build. Widen max_z if you know there "
+                "are more floors.",
+                "warn",
+            )
+
+    def _step4_multilevel(s, pcd_path, sd):
+        """Detect levels, then chain one MapBuildW per level sequentially."""
+        from core.level_detection import detect_floor_levels, summarize_levels
+        s._set_worker_status("Detecting floor levels…", busy=True)
+        try:
+            pts = load_xyz_points(pcd_path)
+            levels = detect_floor_levels(pts)
+        except Exception as e:
+            s._log(f"[Levels] Detection failed: {e}", "warn")
+            s.b4.setEnabled(True); s._set_worker_status("Idle"); return
+
+        s._log(summarize_levels(levels), "info")
+        if len(levels) <= 1:
+            s._log("[Levels] Falling back to single-level build.", "warn")
+            s.cb_multi_level.setChecked(False)
+            s._step4()
+            return
+
+        s._multi_level_outputs = []  # list of (level_index, pgm_path)
+        s._stepper.set_active(1); s._sync_section_states(1)
+
+        def start_level(i):
+            if i >= len(levels):
+                _all_done()
+                return
+            lv = levels[i]
+            name = f"map_level{lv.index}"
+            s._log(
+                f"[Levels] Building {name}: z=[{lv.z_low:+.2f}, {lv.z_high:+.2f}] m "
+                f"(anchor {lv.anchor_z:+.2f} m, {lv.point_count:,} pts)",
+                "info",
+            )
+            s._set_worker_status(
+                f"Building level {i + 1} of {len(levels)}…", busy=True
+            )
+            w = MapBuildW(
+                pcd_path, sd, lv.z_low, lv.z_high,
+                s.t_slope.value(), s.t_step.value(),
+                v3_mode=s._v3_mode,
+                min_points_per_cell=s.min_pts_cell.value(),
+                out_prefix_name=name,
+                absolute_z=True,
+            )
+            w.log.connect(s._log); w.prog.connect(s.prog.setValue)
+            def lv_done(ok, msg):
+                if ok:
+                    pgm = os.path.join(sd, name + ".pgm")
+                    s._multi_level_outputs.append((lv.index, pgm))
+                    s._log(f"[Levels] Completed {name} → {pgm}", "success")
+                else:
+                    s._log(f"[Levels] {name} failed: {msg}", "warn")
+                start_level(i + 1)
+            w.done.connect(lv_done)
+            s._wk.append(w)
+            w.start()
+
+        def _all_done():
+            s.b4.setEnabled(True)
+            s._set_worker_status("Idle")
+            if not s._multi_level_outputs:
+                s._stepper.set_status(1, "pending")
+                s._group_boxes[1].setStatus("pending")
+                return
+            # Load the lowest level into the main view
+            s._multi_level_outputs.sort(key=lambda t: t[0])
+            first_pgm = s._multi_level_outputs[0][1]
+            yml = first_pgm.replace(".pgm", ".yaml")
+            s.e_pgm.setText(first_pgm); s.e_yaml.setText(yml)
+            if os.path.isfile(first_pgm):
+                s._load_map(first_pgm)
+            s._log(
+                f"[Levels] Loaded level 0 into view. "
+                f"Use the .pgm browse button in Step 3 to switch: "
+                + ", ".join(os.path.basename(p) for _, p in s._multi_level_outputs),
+                "success",
+            )
+            s._stepper.set_status(1, "complete")
+            s._group_boxes[1].setStatus("complete")
+
+        start_level(0)
 
     # ── Ground Analysis (RANSAC ramp detection) ──
     def _run_ground_analysis(s):

@@ -15,6 +15,11 @@ from pcd_package.pcd_tools import load_xyz_points
 
 from core.RII_horizontal import derive_terrain_sidecar_bounds
 
+
+class _SkipAutoZ(Exception):
+    """Internal: skip automatic z-band widening when the caller supplied
+    absolute per-level bounds already."""
+
 try:
     import pyqtgraph.opengl as pgl
     PYQTGRAPH_GL_AVAILABLE = True
@@ -112,7 +117,9 @@ class ViewW(QThread):
 
 class MapBuildW(QThread):
     log = pyqtSignal(str, str); done = pyqtSignal(bool, str); prog = pyqtSignal(int)
-    def __init__(s, pcd, sd, mz, xz, max_slope_deg=35.0, max_step_m=0.25, wait_seconds=12, v3_mode=False, min_points_per_cell=3):
+    def __init__(s, pcd, sd, mz, xz, max_slope_deg=35.0, max_step_m=0.25,
+                 wait_seconds=12, v3_mode=False, min_points_per_cell=3,
+                 out_prefix_name="map", absolute_z=False):
         super().__init__()
         s.pcd = pcd
         s.sd = sd
@@ -123,6 +130,8 @@ class MapBuildW(QThread):
         s.wait_seconds = wait_seconds
         s.v3_mode = v3_mode
         s.min_points_per_cell = min_points_per_cell
+        s.out_prefix_name = out_prefix_name
+        s.absolute_z = absolute_z
         s._ps = []
         s._c = False
     def _killall(s):
@@ -155,7 +164,7 @@ class MapBuildW(QThread):
     def run(s):
         try:
             os.makedirs(s.sd, exist_ok=True)
-            out_prefix = os.path.join(s.sd, "map")
+            out_prefix = os.path.join(s.sd, s.out_prefix_name)
             trav_prefix = out_prefix + "_traversable"
             floor_prefix = out_prefix + "_floor"
             for prefix in (out_prefix, trav_prefix, floor_prefix):
@@ -166,8 +175,16 @@ class MapBuildW(QThread):
 
             terrain_mz = float(s.mz)
             terrain_xz = float(s.xz)
-            terrain_z_absolute = False
+            terrain_z_absolute = bool(s.absolute_z)
             try:
+                if s.absolute_z:
+                    # Per-level build: use the exact slab bounds we were given.
+                    s.log.emit(
+                        "[Mask] Using per-level absolute z bounds "
+                        f"[{terrain_mz:.2f}, {terrain_xz:.2f}] m for floor/traversability sidecars.",
+                        "info",
+                    )
+                    raise _SkipAutoZ()
                 points = load_xyz_points(s.pcd)
                 terrain_mz, terrain_xz, terrain_meta = derive_terrain_sidecar_bounds(points, s.mz, s.xz)
                 if terrain_meta["source"] == "preset_cleanup":
@@ -185,6 +202,8 @@ class MapBuildW(QThread):
                         f"[{terrain_mz:.2f}, {terrain_xz:.2f}] m.",
                         "info",
                     )
+            except _SkipAutoZ:
+                pass
             except Exception as exc:
                 s.log.emit(
                     "[Mask] Terrain z-range auto-estimate failed; reusing the obstacle-map z range "
@@ -209,6 +228,8 @@ class MapBuildW(QThread):
                 "--max_z", str(s.xz),
                 "--min-points-per-cell", str(s.min_points_per_cell),
             ]
+            if s.absolute_z:
+                obstacle_cmd.append("--absolute-z")
             trav_cmd = [
                 py, script,
                 "--in", s.pcd,
