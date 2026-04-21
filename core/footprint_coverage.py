@@ -335,11 +335,34 @@ def compute_footprint_reachable(
 
     log(f"[footprint] BFS visited {states_expanded} states in {time.time() - t0:.2f}s", "info")
 
-    reachable = visited.any(axis=0).astype(np.uint8)
+    # ── Project to swept area ──────────────────────────────────────────
+    # visited[k] marks cells where the robot CENTER can rest at orientation k.
+    # The "coverage" a user cares about is the set of cells the robot BODY
+    # sweeps across — every footprint cell at every reachable pose.
+    # We dilate each visited[k] by the footprint at θ_k and union the results,
+    # then intersect with the obstacle-free mask (the footprint at a
+    # reachable pose is clear of obstacles by invariant, but this is a
+    # safety belt against off-by-one rasterization).
+    t0 = time.time()
+    swept = np.zeros((H, W), dtype=np.uint8)
+    for k in range(_N_ORIENTS):
+        if not visited[k].any():
+            continue
+        if footprint_shape == "circular":
+            struct = _rasterise_circle_footprint(max(half_w_m, half_l_m), resolution)
+        else:
+            theta = 2.0 * math.pi * k / _N_ORIENTS
+            struct = _rasterise_rect_footprint(half_w_m, half_l_m, theta, resolution)
+        swept |= _dilate_with_structure(visited[k].astype(np.uint8), struct)
+    swept &= (blocked == 0).astype(np.uint8)
+    log(f"[footprint] Swept-area projection: {time.time() - t0:.2f}s  "
+        f"center_cells={int(visited.any(axis=0).sum())} → swept_cells={int(swept.sum())}", "info")
+
     meta = {
         "states_expanded": states_expanded,
         "orientations": _N_ORIENTS,
-        "reachable_cells": int(reachable.sum()),
+        "reachable_cells": int(swept.sum()),
+        "center_cells": int(visited.any(axis=0).sum()),
         "seed_cells": int(seeds_r.size),
     }
-    return reachable, meta
+    return swept, meta
