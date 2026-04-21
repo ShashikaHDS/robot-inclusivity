@@ -39,8 +39,6 @@ import numpy as np
 
 try:
     from scipy.ndimage import binary_dilation as _scipy_dilate
-    from scipy.ndimage import binary_erosion as _scipy_erode
-    from scipy.ndimage import label as _scipy_label
     _HAS_SCIPY = True
 except ImportError:
     _HAS_SCIPY = False
@@ -180,8 +178,6 @@ def compute_footprint_reachable(
     start_mask: np.ndarray,       # (H, W) uint8 or 1D h*w seed
     motion_model: str = "differential",  # 'differential' or 'holonomic'
     wall_safety_cells: int = 1,   # thicken obstacles by this many cells
-    obstacle_denoise_cells: int = 1,  # remove obstacles smaller than this
-    keep_only_connected_component: bool = True,  # drop islands disconnected from start
     logf=None,
 ) -> Tuple[np.ndarray, dict]:
     """Return (reachable_mask, meta).
@@ -191,30 +187,11 @@ def compute_footprint_reachable(
 
     wall_safety_cells: pre-dilate obstacles by this radius before
     collision checks. 1 (default, 5 cm at 0.05 m/px) closes 1-pixel
-    gaps and sub-pixel scan artifacts. 0 disables.
-
-    obstacle_denoise_cells: morphological opening radius applied to the
-    obstacle map before safety dilation. Removes isolated scan-noise
-    pixels (1 = single-pixel dots go away). 0 disables.
-
-    keep_only_connected_component: keep only the BFS component that
-    contains the start seed; drop any disconnected swept-body islands.
+    gaps and sub-pixel scan artifacts so the rotated footprint can't
+    slip through thin walls. Set to 0 to disable.
     """
     log = logf if logf else (lambda m, c="": None)
     H, W = blocked.shape
-
-    # ── Obstacle denoise (morphological opening) ──────────────────────
-    if obstacle_denoise_cells and obstacle_denoise_cells > 0:
-        k = obstacle_denoise_cells
-        struct = np.ones((2 * k + 1, 2 * k + 1), dtype=np.uint8)
-        # Opening = erode then dilate — removes isolated features ≤ k px
-        if _HAS_SCIPY:
-            eroded = _scipy_erode(blocked.astype(bool), structure=struct.astype(bool)).astype(np.uint8)
-        else:
-            # Fallback: no-op if scipy not present (erosion is non-trivial to hand-roll)
-            eroded = blocked
-        blocked = _dilate_with_structure(eroded, struct)
-        log(f"[footprint] Obstacle denoise: removed features ≤ {k} px.", "info")
 
     # ── Wall safety dilation ───────────────────────────────────────────
     if wall_safety_cells and wall_safety_cells > 0:
@@ -393,30 +370,14 @@ def compute_footprint_reachable(
             struct = _rasterise_rect_footprint(half_w_m, half_l_m, theta, resolution)
         swept |= _dilate_with_structure(visited[k].astype(np.uint8), struct)
     swept &= (blocked == 0).astype(np.uint8)
-    center_cells_ct = int(visited.any(axis=0).sum())
     log(f"[footprint] Swept-area projection: {time.time() - t0:.2f}s  "
-        f"center_cells={center_cells_ct} → swept_cells={int(swept.sum())}", "info")
-
-    # ── Optional: drop swept-body islands disconnected from the start ──
-    if keep_only_connected_component and _HAS_SCIPY and swept.any():
-        labels, n_components = _scipy_label(swept.astype(bool))
-        if n_components > 1:
-            # Find the component label(s) containing any seed cell
-            seed_labels = labels[seeds_r, seeds_c] if seeds_r.size > 0 else np.array([], dtype=labels.dtype)
-            seed_labels = seed_labels[seed_labels > 0]
-            if seed_labels.size > 0:
-                keep = np.unique(seed_labels)
-                mask = np.isin(labels, keep)
-                before = int(swept.sum())
-                swept = (mask & (swept > 0)).astype(np.uint8)
-                log(f"[footprint] Kept {len(keep)}/{n_components} connected components "
-                    f"(swept_cells {before} → {int(swept.sum())}).", "info")
+        f"center_cells={int(visited.any(axis=0).sum())} → swept_cells={int(swept.sum())}", "info")
 
     meta = {
         "states_expanded": states_expanded,
         "orientations": _N_ORIENTS,
         "reachable_cells": int(swept.sum()),
-        "center_cells": center_cells_ct,
+        "center_cells": int(visited.any(axis=0).sum()),
         "seed_cells": int(seeds_r.size),
     }
     return swept, meta
