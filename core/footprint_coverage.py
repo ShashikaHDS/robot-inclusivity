@@ -177,15 +177,30 @@ def compute_footprint_reachable(
     resolution: float,            # meters per pixel
     start_mask: np.ndarray,       # (H, W) uint8 or 1D h*w seed
     motion_model: str = "differential",  # 'differential' or 'holonomic'
+    wall_safety_cells: int = 1,   # thicken obstacles by this many cells
     logf=None,
 ) -> Tuple[np.ndarray, dict]:
     """Return (reachable_mask, meta).
 
-    reachable_mask is a (H, W) uint8 where 1 marks cells the robot's
-    center can visit, respecting rotation and diff-drive motion.
+    reachable_mask is a (H, W) uint8 where 1 marks cells the robot BODY
+    sweeps, respecting rotation and diff-drive motion.
+
+    wall_safety_cells: pre-dilate obstacles by this radius before
+    collision checks. 1 (default, 5 cm at 0.05 m/px) closes 1-pixel
+    gaps and sub-pixel scan artifacts so the rotated footprint can't
+    slip through thin walls. Set to 0 to disable.
     """
     log = logf if logf else (lambda m, c="": None)
     H, W = blocked.shape
+
+    # ── Wall safety dilation ───────────────────────────────────────────
+    if wall_safety_cells and wall_safety_cells > 0:
+        safety_struct = np.ones(
+            (2 * wall_safety_cells + 1, 2 * wall_safety_cells + 1), dtype=np.uint8
+        )
+        blocked = _dilate_with_structure(blocked, safety_struct)
+        log(f"[footprint] Wall safety dilation: obstacles thickened by "
+            f"{wall_safety_cells} px ({wall_safety_cells * resolution * 100:.1f} cm).", "info")
 
     # Accept 1D or 2D start mask
     start_mask = np.asarray(start_mask)
