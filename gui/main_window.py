@@ -122,6 +122,9 @@ class MainWin(QMainWindow):
     def __init__(s):
         super().__init__()
         s._v3_mode = os.environ.get("RII_PIPELINE_VERSION") == "3"
+        s._v4_mode = os.environ.get("RII_PIPELINE_VERSION") == "4"
+        # Shared flag: both V3 and V4 mirror t_step → oz1 (min obstacle height)
+        s._link_step_min_z = s._v3_mode or s._v4_mode
         s.setWindowTitle("Robot Inclusivity Index (RII)")
         _icon_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "icon.png")
         if os.path.isfile(_icon_path):
@@ -1724,7 +1727,11 @@ class MainWin(QMainWindow):
         s.floor_status.setStyleSheet("color:#2563eb;font-size:11px;font-weight:bold;padding:2px")
         l4.addWidget(s.floor_status)
 
-        if s._v3_mode:
+        if s._v4_mode:
+            # V4: oz1 is a pure mirror of t_step → no visible row; only robot_height
+            # is user-tunable. See V4 summary label below.
+            s.oz1 = QDoubleSpinBox(); s.oz1.setRange(0.0, 5.0); s.oz1.setValue(0.25); s.oz1.setDecimals(2); s.oz1.hide()
+        elif s._v3_mode:
             # V3: min_z linked to max_step — obstacles below step height are ignored
             zh_minz = QHBoxLayout()
             zh_minz.addWidget(QLabel("Min obstacle height (m):"))
@@ -1741,13 +1748,23 @@ class MainWin(QMainWindow):
             s.oz1 = QDoubleSpinBox(); s.oz1.setValue(0.05); s.oz1.hide()
 
         zh = QHBoxLayout()
-        zh.addWidget(QLabel("Obstacle max height (m):"))
+        if s._v4_mode:
+            zh.addWidget(QLabel("Robot height (m):"))
+        else:
+            zh.addWidget(QLabel("Obstacle max height (m):"))
         s.oz2 = QDoubleSpinBox(); s.oz2.setRange(-20, 20); s.oz2.setValue(1.00); s.oz2.setDecimals(2)
-        s.oz2.setToolTip(
-            "Maximum obstacle height above detected floor.\n"
-            "Points above this are ignored (ceiling, pipes).\n"
-            "Set to slightly above robot height."
-        )
+        if s._v4_mode:
+            s.oz2.setToolTip(
+                "Physical height of the robot (m).\n"
+                "Points above this (relative to detected floor) are treated as\n"
+                "overhead clearance and excluded from the obstacle map."
+            )
+        else:
+            s.oz2.setToolTip(
+                "Maximum obstacle height above detected floor.\n"
+                "Points above this are ignored (ceiling, pipes).\n"
+                "Set to slightly above robot height."
+            )
         zh.addWidget(s.oz2)
         zh.addWidget(QLabel("  Min points/cell:"))
         s.min_pts_cell = QSpinBox(); s.min_pts_cell.setRange(1, 20); s.min_pts_cell.setValue(3)
@@ -1775,12 +1792,18 @@ class MainWin(QMainWindow):
             "Should match robot's actual step-climbing ability."
         )
         th.addWidget(s.t_step)
-        if s._v3_mode:
-            # V3: link max_step → oz1 (min obstacle height)
+        if s._link_step_min_z:
+            # V3/V4: link max_step → oz1 (min obstacle height)
             s.t_step.valueChanged.connect(lambda v: s.oz1.setValue(v))
             s.oz1.setValue(s.t_step.value())  # sync initial value
         l4.addLayout(th)
-        if s._v3_mode:
+        if s._v4_mode:
+            l4.addWidget(QLabel(
+                "V4: obstacle map = points between max_step and robot_height "
+                "(relative to detected floor). max_slope is used only for "
+                "traversability and ramp detection."
+            ))
+        elif s._v3_mode:
             l4.addWidget(QLabel("V3: max_slope = steepest ramp, max_step = min obstacle height (steps below this are ignored)."))
         else:
             l4.addWidget(QLabel("Terrain thresholds for traversability: max_slope = steepest ramp, max_step = tallest climbable step."))

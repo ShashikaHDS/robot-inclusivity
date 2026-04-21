@@ -57,6 +57,13 @@ _GUIDE_SECTIONS = [
         </ul>
         <h3>Outputs</h3>
         <p>Produces <code>map.pgm</code>, <code>map.yaml</code>, and traversability/floor sidecars in the map output directory.</p>
+        <h3>V4 mode (opt-in)</h3>
+        <p>Launch with <code>RII_PIPELINE_VERSION=4</code> to use a simpler Z-slab model:
+        the obstacle map contains only points between <b>max_step</b> (lower bound) and <b>robot_height</b>
+        (upper bound), both measured above the detected floor. Changing <b>max_step</b> or
+        <b>robot_height</b> directly changes which points appear as obstacles. <b>max_slope</b> still
+        exists but only influences traversability and ramp detection &mdash; it does not affect the
+        obstacle slab.</p>
     """),
 
     ("Ramp Detection & Editing", """
