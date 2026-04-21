@@ -55,6 +55,34 @@ for _i in range(0, _N_ORIENTS, _MOVES_STRIDE):
     _ORIENT_MOVES[_i] = (int(round(math.sin(_th))), int(round(math.cos(_th))))
 
 
+def _rasterise_rect_union(
+    half_w_m: float,
+    half_l_m: float,
+    theta_start: float,
+    theta_end: float,
+    n_samples: int,
+    resolution: float,
+    oversample: int = 3,
+) -> np.ndarray:
+    """Union of rectangle rasters at several angles sampled in [start, end].
+    Used for building rotation-sweep masks that approximate the footprint
+    traced while the robot pivots between adjacent orientations."""
+    sampled = np.linspace(theta_start, theta_end, n_samples)
+    rasters = [
+        _rasterise_rect_footprint(half_w_m, half_l_m, float(t), resolution, oversample=oversample)
+        for t in sampled
+    ]
+    # Align into a shared bounding box, then OR
+    max_h = max(r.shape[0] for r in rasters)
+    max_w = max(r.shape[1] for r in rasters)
+    merged = np.zeros((max_h, max_w), dtype=np.uint8)
+    for r in rasters:
+        pad_y = (max_h - r.shape[0]) // 2
+        pad_x = (max_w - r.shape[1]) // 2
+        merged[pad_y:pad_y + r.shape[0], pad_x:pad_x + r.shape[1]] |= r
+    return merged
+
+
 def _rasterise_rect_footprint(
     half_w_m: float,
     half_l_m: float,
@@ -172,16 +200,31 @@ def compute_footprint_reachable(
     if footprint_shape == "circular":
         struct = _rasterise_circle_footprint(max(half_w_m, half_l_m), resolution)
         collide_single = _dilate_with_structure(blocked, struct)
-        # Broadcast: orientation doesn't matter for a circle. Writeable copy.
+        # Orientation doesn't matter for a circle. Writeable copy.
         collide_cube = np.broadcast_to(collide_single[None, :, :], (_N_ORIENTS, H, W))
         collide_cube = np.ascontiguousarray(collide_cube)
+        # Sweep masks collapse to the static mask (no rotation effect)
+        sweep_cube = collide_cube.copy()
     else:  # rectangular
         collide_cube = np.empty((_N_ORIENTS, H, W), dtype=np.uint8)
         for k in range(_N_ORIENTS):
             theta = 2.0 * math.pi * k / _N_ORIENTS
             s_elem = _rasterise_rect_footprint(half_w_m, half_l_m, theta, resolution)
             collide_cube[k] = _dilate_with_structure(blocked, s_elem)
-    log(f"[footprint] Precomputed {_N_ORIENTS} collision masks in {time.time() - t0:.2f}s", "info")
+        # Sweep mask at index k represents the union of footprints at angles
+        # between θ_k and θ_{k+1}, covering a 22.5° rotation. Used to gate
+        # rotation transitions from k to k+1 (and in reverse for k to k-1).
+        step_rad = 2.0 * math.pi / _N_ORIENTS
+        sweep_cube = np.empty_like(collide_cube)
+        for k in range(_N_ORIENTS):
+            theta_k = 2.0 * math.pi * k / _N_ORIENTS
+            swept = _rasterise_rect_union(
+                half_w_m, half_l_m, theta_k, theta_k + step_rad,
+                n_samples=5, resolution=resolution,
+            )
+            sweep_cube[k] = _dilate_with_structure(blocked, swept)
+    log(f"[footprint] Precomputed {_N_ORIENTS} static + sweep collision masks "
+        f"in {time.time() - t0:.2f}s", "info")
 
     # Seed
     t0 = time.time()
@@ -212,12 +255,16 @@ def compute_footprint_reachable(
         r, c, k = q.popleft()
         states_expanded += 1
 
-        # Rotate ±1 step (±22.5°). Both endpoints must be collision-free at
-        # (r, c) — we're already collision-free at (r, c, k) by invariant,
-        # and we explicitly test (r, c, nk).
+        # Rotate ±1 step (±22.5°). Both endpoints must be collision-free AND
+        # the swept area between them must be obstacle-free, so the robot
+        # can actually perform the rotation in place.
         for dk in (-1, 1):
             nk = (k + dk) % _N_ORIENTS
-            if not visited[nk, r, c] and not collide_cube[nk, r, c]:
+            # sweep_idx is the "lower-angle" index in the (k, k+1) pair
+            sweep_idx = k if dk == 1 else (k - 1) % _N_ORIENTS
+            if (not visited[nk, r, c]
+                    and not collide_cube[nk, r, c]
+                    and not sweep_cube[sweep_idx, r, c]):
                 visited[nk, r, c] = True
                 q.append((r, c, nk))
 
