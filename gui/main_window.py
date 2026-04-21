@@ -1543,6 +1543,7 @@ class MainWin(QMainWindow):
         "edit_ref_overlay",
         "e_pgm", "e_yaml", "e_sem_pcd",
         "sel_mode", "rii_mode", "planner_combo",
+        "cb_accurate_footprint",
         "rs", "rw", "rl", "as_", "ar", "aw", "al",
         "sem_filter",
         "rv_wall_min_h", "rv_wall_max_h", "rv_voxel", "rv_reach", "rv_angle",
@@ -2043,6 +2044,18 @@ class MainWin(QMainWindow):
         s.planner_row.setLayout(ph)
         s.planner_row.hide()
         l5.addWidget(s.planner_row)
+
+        # Rotation-aware, differential-drive reachability
+        s.cb_accurate_footprint = QCheckBox("Accurate footprint fit (rotation + diff-drive)")
+        s.cb_accurate_footprint.setToolTip(
+            "Rasterise the robot rectangle at 16 orientations and require the\n"
+            "robot to face the direction it moves (rotate-in-place + forward).\n"
+            "Recovers tight corners and diagonal passages that axis-aligned\n"
+            "inflation rejects.\n"
+            "\n"
+            "A few seconds slower than the default on typical maps."
+        )
+        l5.addWidget(s.cb_accurate_footprint)
 
         # Reference robot
         l5.addWidget(QLabel("─── Reference Robot (comparison only) ───"))
@@ -3548,6 +3561,7 @@ class MainWin(QMainWindow):
                     floor_sidecar,
                     planner=planner,
                     ground_analysis_result=None,  # Reference robot passes all ramps
+                    accurate_footprint=s.cb_accurate_footprint.isChecked() if hasattr(s, "cb_accurate_footprint") else False,
                 )
                 s.ref_result_sig.emit(r, pgm)
             except Exception as e:
@@ -3626,6 +3640,7 @@ class MainWin(QMainWindow):
                     floor_sidecar,
                     planner=planner,
                     ground_analysis_result=getattr(s, '_ground_result', None),
+                    accurate_footprint=s.cb_accurate_footprint.isChecked() if hasattr(s, "cb_accurate_footprint") else False,
                 )
                 s.act_result_sig.emit(r, pgm)
             except Exception as e:

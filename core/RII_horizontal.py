@@ -823,6 +823,8 @@ def run_coverage(
     use_stc=False,
     planner=None,
     ground_analysis_result=None,
+    accurate_footprint=False,
+    footprint_motion="differential",
 ):
     """Horizontal RII area computation."""
     L = logf if logf else lambda m, c="": None
@@ -946,6 +948,108 @@ def run_coverage(
         L(f"[{label}] Selection mask: {time.time()-t0:.3f}s", "info")
 
     source_blocked = blocked.copy()
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # Accurate footprint-fit branch — rotation-aware + differential drive.
+    # Skips the inflation + coarse-grid planner entirely.
+    # ═══════════════════════════════════════════════════════════════════════
+    if accurate_footprint:
+        from core.footprint_coverage import compute_footprint_reachable
+        shape = params.get('shape', 'circular')
+        halfW = params.get('halfW', params.get('radius', 0.35))
+        halfL = params.get('halfL', params.get('radius', 0.35))
+        blocked2d = blocked.reshape(h, w)
+
+        # Seed: use selection if provided, else a single cell at the start
+        if sel_mask is not None:
+            seed_arr = np.asarray(sel_mask)
+            if seed_arr.ndim == 1 and seed_arr.size == h * w:
+                seed_arr = seed_arr.reshape(h, w)
+            if seed_arr.shape != (h, w):
+                L(f"[{label}] sel_mask shape {seed_arr.shape} mismatch; falling back to point seed.", "warn")
+                seed_arr = None
+        else:
+            seed_arr = None
+        if seed_arr is None:
+            sx_fine = max(0, min(int((start_x - ox) / res), w - 1))
+            sy_fine = max(0, min(int((start_y - oy) / res), h - 1))
+            seed_arr = np.zeros((h, w), dtype=np.uint8)
+            seed_arr[sy_fine, sx_fine] = 1
+        seed_mask = (seed_arr.astype(bool)).astype(np.uint8)
+
+        t0 = time.time()
+        reachable2d, fp_meta = compute_footprint_reachable(
+            blocked2d, halfW, halfL, shape, res, seed_mask,
+            motion_model=footprint_motion, logf=L,
+        )
+        L(f"[{label}] Accurate footprint fit done: {time.time()-t0:.2f}s  "
+          f"reachable={fp_meta['reachable_cells']}  states={fp_meta['states_expanded']}", "success")
+
+        # Floor denominator (same rule as the inflation path)
+        if trav_mask is not None:
+            floor_mask2d = trav_mask.reshape(h, w)
+        elif floor_mask is not None:
+            floor_mask2d = floor_mask.reshape(h, w)
+        else:
+            floor_mask2d = (blocked2d == 0).astype(np.uint8)
+
+        total_floor_cells = int(floor_mask2d.sum())
+        total_floor_area = float(total_floor_cells) * res * res
+        accessible_cells = int(reachable2d.sum())
+        accessible_area = float(accessible_cells) * res * res
+        rii_horizontal = (accessible_area / total_floor_area * 100.0) if total_floor_area > 0 else 0.0
+        L(f"[{label}] Total floor: {total_floor_area:.2f}m², Covered: {accessible_area:.2f}m²", "info")
+        L(f"[{label}] RII Horizontal = {rii_horizontal:.1f}% "
+          f"(footprint-fit, {fp_meta['orientations']} orientations, {footprint_motion})", "success")
+
+        sx_rep = max(0, min(int((start_x - ox) / res), w - 1))
+        sy_rep = max(0, min(int((start_y - oy) / res), h - 1))
+        result = dict(
+            coveredArea=accessible_area,
+            reachableArea=accessible_area,
+            accessibleArea=accessible_area,
+            accessibleCells=accessible_cells,
+            totalFloorArea=total_floor_area,
+            totalFloorCells=total_floor_cells,
+            riiHorizontal=rii_horizontal,
+            useSTC=False,
+            planner=planner or "footprint-fit",
+            stcComponents=1,
+            stcLargestTiles=accessible_cells,
+            stcStep=1,
+            stcPath=[],
+            reachableCells=accessible_cells,
+            waypoints=0,
+            blocked=blocked.copy(),
+            sourceBlocked=source_blocked.copy(),
+            floorPx=floor_mask2d.ravel().copy(),
+            covPx=reachable2d.copy(),
+            trafficHeatmap=np.zeros((h, w), dtype=np.int32).ravel(),
+            params=dict(params),
+            resolution=float(res),
+            coarsePath=[],
+            step=1,
+            cw=w,
+            ch=h,
+            w=w,
+            h=h,
+            footprintMeta=fp_meta,
+            accurateFootprint=True,
+            footprintMotion=footprint_motion,
+        )
+        result.update(
+            origin=(float(ox), float(oy)),
+            requestedStartWorld=(float(start_x), float(start_y)),
+            effectiveStartWorld=(float(start_x), float(start_y)),
+            requestedStartCell=(sy_rep, sx_rep),
+            effectiveStartCell=(sy_rep, sx_rep),
+            startAdjusted=True,
+            startAdjustmentReason=None,
+            startComponentSize=accessible_cells,
+            largestComponentSize=accessible_cells,
+        )
+        L(f"[{label}] Total time: {time.time() - t_total:.2f}s", "info")
+        return result
 
     # ── Build the driveable map from traversability (primary) + obstacles (fallback) ──
     # The traversability map already encodes where the robot can physically drive
