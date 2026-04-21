@@ -175,6 +175,7 @@ class MainWin(QMainWindow):
         s._active_level = None          # None = unknown / single-floor
         s._level_pgm_map = {}           # {level_index: pgm_path}
         s._level_results = {}           # {level_index: {'ref':…, 'act':…, 'anchor_z':…}}
+        s._last_floor_anchor_z = None   # remembered from most recent preset
         s._log(s._viewer_backend_startup_message(), "info" if PYQTGRAPH_GL_AVAILABLE else "warn")
         s._log(f"Session cache: {s._cache_root}", "info")
         s._log("Pipeline ready. Steps 1→6.", "info")
@@ -528,6 +529,29 @@ class MainWin(QMainWindow):
                 "info",
             )
 
+    def _refresh_v4_floor_status(s):
+        """V4: re-render floor_status using the last-known floor anchor and
+        current spinbox values so the user sees -0.57 move live when they
+        change max_step or robot_height."""
+        if not getattr(s, "_v4_mode", False) or not hasattr(s, "floor_status"):
+            return
+        floor_z = s._last_floor_anchor_z
+        step = s.t_step.value() if hasattr(s, "t_step") else 0.0
+        rh = s.oz2.value() if hasattr(s, "oz2") else 0.0
+        if floor_z is None:
+            s.floor_status.setText(
+                f"Slab = floor + [max_step {step:.2f}, robot_height {rh:.2f}] m  "
+                f"(click <i>Apply Preset</i> to anchor to the detected floor)"
+            )
+            return
+        abs_min = floor_z + step
+        abs_max = floor_z + rh
+        s.floor_status.setText(
+            f"Floor detected at {floor_z:.3f} m  |  "
+            f"Slab = floor + [max_step {step:.2f}, robot_height {rh:.2f}] m  |  "
+            f"absolute: [{abs_min:.2f}, {abs_max:.2f}] m"
+        )
+
     def _apply_map_ground_preset(s, log=True):
         pi = s.e_in.text().strip() if hasattr(s, "e_in") else ""
         if not os.path.isfile(pi):
@@ -544,28 +568,60 @@ class MainWin(QMainWindow):
             return
         finally:
             QApplication.restoreOverrideCursor()
-        s.oz1.setValue(float(z_preset["map_min_z"]))
-        s.oz2.setValue(float(z_preset["map_max_z"]))
-        s._flash_widgets([s.oz1, s.oz2])
-        if hasattr(s, "floor_status"):
-            s.floor_status.setText(
-                f"Floor detected at {z_preset['floor_anchor_z']:.3f} m  |  "
-                f"Recommended obstacle slice: [{z_preset['map_min_z']:.2f}, {z_preset['map_max_z']:.2f}] m (floor-relative)"
-            )
-        if hasattr(s, "map_preset_status"):
-            s.map_preset_status.setText(
-                "Preset applied: "
-                f"floor≈{z_preset['floor_anchor_z']:.2f} m, "
-                f"map z={z_preset['map_min_z']:.2f}..{z_preset['map_max_z']:.2f} m "
-                f"({source_desc})"
-            )
-        if log:
-            s._log(
-                "Applied raw-cloud map z preset. "
-                f"Floor anchor≈{z_preset['floor_anchor_z']:.2f} m, "
-                f"map z={z_preset['map_min_z']:.2f}..{z_preset['map_max_z']:.2f} m.",
-                "info",
-            )
+        floor_z = float(z_preset["floor_anchor_z"])
+        preset_min_abs = float(z_preset["map_min_z"])
+        preset_max_abs = float(z_preset["map_max_z"])
+        # Floor-relative offsets implied by the preset
+        min_offset = preset_min_abs - floor_z
+        max_offset = preset_max_abs - floor_z
+        s._last_floor_anchor_z = floor_z
+
+        if s._v4_mode:
+            # V4: keep oz1 driven by max_step (don't override absolute).
+            # Write the robot-height offset as a POSITIVE floor-relative value
+            # so the pipeline's auto mode treats it as an offset above floor.
+            s.oz2.setValue(max_offset)
+            s._flash_widgets([s.t_step, s.oz2])
+            s._refresh_v4_floor_status()
+            if hasattr(s, "map_preset_status"):
+                s.map_preset_status.setText(
+                    "Preset applied: "
+                    f"floor≈{floor_z:.2f} m, "
+                    f"robot_height={max_offset:.2f} m (floor-relative)  "
+                    f"({source_desc})"
+                )
+            if log:
+                s._log(
+                    "V4 preset applied. "
+                    f"Floor anchor≈{floor_z:.2f} m, "
+                    f"robot_height={max_offset:.2f} m (floor-relative). "
+                    f"max_step (current={s.t_step.value():.2f} m) drives the lower bound.",
+                    "info",
+                )
+        else:
+            # V1/V2/V3: preset writes absolute Z values (historical behaviour).
+            s.oz1.setValue(preset_min_abs)
+            s.oz2.setValue(preset_max_abs)
+            s._flash_widgets([s.oz1, s.oz2])
+            if hasattr(s, "floor_status"):
+                s.floor_status.setText(
+                    f"Floor detected at {floor_z:.3f} m  |  "
+                    f"Recommended obstacle slice: [{preset_min_abs:.2f}, {preset_max_abs:.2f}] m (floor-relative)"
+                )
+            if hasattr(s, "map_preset_status"):
+                s.map_preset_status.setText(
+                    "Preset applied: "
+                    f"floor≈{floor_z:.2f} m, "
+                    f"map z={preset_min_abs:.2f}..{preset_max_abs:.2f} m "
+                    f"({source_desc})"
+                )
+            if log:
+                s._log(
+                    "Applied raw-cloud map z preset. "
+                    f"Floor anchor≈{floor_z:.2f} m, "
+                    f"map z={preset_min_abs:.2f}..{preset_max_abs:.2f} m.",
+                    "info",
+                )
 
     def _browse_pgm(s):
         f, _ = QFileDialog.getOpenFileName(s, "PGM", "", "PGM (*.pgm)")
@@ -1796,6 +1852,10 @@ class MainWin(QMainWindow):
             # V3/V4: link max_step → oz1 (min obstacle height)
             s.t_step.valueChanged.connect(lambda v: s.oz1.setValue(v))
             s.oz1.setValue(s.t_step.value())  # sync initial value
+        if s._v4_mode:
+            # Live status updates when either slab bound changes
+            s.t_step.valueChanged.connect(lambda _v: s._refresh_v4_floor_status())
+            s.oz2.valueChanged.connect(lambda _v: s._refresh_v4_floor_status())
         l4.addLayout(th)
         if s._v4_mode:
             l4.addWidget(QLabel(
