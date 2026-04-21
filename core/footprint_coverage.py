@@ -305,14 +305,19 @@ def compute_footprint_reachable(
             if (k % _MOVES_STRIDE) == 0 or circular:
                 dy_dx = _ORIENT_MOVES.get(k) if (k in _ORIENT_MOVES) else None
                 if dy_dx is None and circular:
-                    # Circular: pick nearest aligned move for this orientation
                     al = (k // _MOVES_STRIDE) * _MOVES_STRIDE
                     dy_dx = _ORIENT_MOVES.get(al)
                 if dy_dx is not None:
                     dy, dx = dy_dx
                     nr, nc = r + dy, c + dx
                     if 0 <= nr < H and 0 <= nc < W:
-                        if not visited[k, nr, nc] and not collide_cube[k, nr, nc]:
+                        ok = not visited[k, nr, nc] and not collide_cube[k, nr, nc]
+                        # Corner-cut guard: a diagonal move is a simultaneous
+                        # axial motion, so both L-corner cells must also clear.
+                        if ok and dy != 0 and dx != 0:
+                            if collide_cube[k, r + dy, c] or collide_cube[k, r, c + dx]:
+                                ok = False
+                        if ok:
                             visited[k, nr, nc] = True
                             q.append((nr, nc, k))
         else:
@@ -320,7 +325,11 @@ def compute_footprint_reachable(
             for (dy, dx) in _ORIENT_MOVES.values():
                 nr, nc = r + dy, c + dx
                 if 0 <= nr < H and 0 <= nc < W:
-                    if not visited[k, nr, nc] and not collide_cube[k, nr, nc]:
+                    ok = not visited[k, nr, nc] and not collide_cube[k, nr, nc]
+                    if ok and dy != 0 and dx != 0:
+                        if collide_cube[k, r + dy, c] or collide_cube[k, r, c + dx]:
+                            ok = False
+                    if ok:
                         visited[k, nr, nc] = True
                         q.append((nr, nc, k))
 
