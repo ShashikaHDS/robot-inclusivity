@@ -156,7 +156,13 @@ def compute_footprint_reachable(
     """
     log = logf if logf else (lambda m, c="": None)
     H, W = blocked.shape
-    assert start_mask.shape == (H, W), "start_mask must match blocked shape"
+    start_mask = np.asarray(start_mask)
+    if start_mask.ndim == 1 and start_mask.size == H * W:
+        start_mask = start_mask.reshape(H, W)
+    if start_mask.shape != (H, W):
+        raise ValueError(
+            f"start_mask shape {start_mask.shape} does not match blocked shape {(H, W)}"
+        )
 
     # 1. Precompute per-orientation collision masks
     t0 = time.time()

@@ -961,10 +961,24 @@ def run_coverage(
         halfL = params.get('halfL', params.get('radius', 0.35))
         blocked2d = blocked.reshape(h, w)
 
-        # Seed: user selection if provided, else a single cell near the requested start
+        # Seed: user selection if provided, else a single cell near the requested start.
+        # sel_mask from selection_mask_from_display is 1D (h*w); reshape to (h, w).
         if sel_mask is not None:
-            seed_mask = (sel_mask.astype(bool)).astype(np.uint8)
-        else:
+            seed_arr = np.asarray(sel_mask)
+            if seed_arr.ndim == 1:
+                if seed_arr.size != h * w:
+                    L(f"[{label}] sel_mask size {seed_arr.size} != h*w {h*w}; ignoring selection.", "warn")
+                    seed_arr = None
+                else:
+                    seed_arr = seed_arr.reshape(h, w)
+            if seed_arr is not None and seed_arr.shape != (h, w):
+                L(f"[{label}] sel_mask shape {seed_arr.shape} != {(h, w)}; ignoring selection.", "warn")
+                seed_arr = None
+            if seed_arr is not None:
+                seed_mask = (seed_arr.astype(bool)).astype(np.uint8)
+            else:
+                sel_mask = None  # fall through to point-seed below
+        if sel_mask is None:
             sx_fine = int((start_x - ox) / res)
             sy_fine = int((start_y - oy) / res)
             sx_fine = max(0, min(sx_fine, w - 1))
