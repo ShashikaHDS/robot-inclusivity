@@ -2927,7 +2927,9 @@ class MainWin(QMainWindow):
             s._step4_multilevel(p, sd)
             return
 
-        w = MapBuildW(p, sd, mz, xz, s.t_slope.value(), s.t_step.value(), v3_mode=s._v3_mode, min_points_per_cell=s.min_pts_cell.value())
+        w = MapBuildW(p, sd, mz, xz, s.t_slope.value(), s.t_step.value(),
+                      v3_mode=s._v3_mode, min_points_per_cell=s.min_pts_cell.value(),
+                      obstacle_only=(s._v3_mode or s._v4_mode))
         w.log.connect(s._log); w.prog.connect(s.prog.setValue)
         s._set_worker_status("Building 2D map…", busy=True)
         s._stepper.set_active(1); s._sync_section_states(1)
@@ -2988,6 +2990,7 @@ class MainWin(QMainWindow):
                 min_points_per_cell=s.min_pts_cell.value(),
                 out_prefix_name=name,
                 absolute_z=True,
+                obstacle_only=(s._v3_mode or s._v4_mode),
             )
             w.log.connect(s._log); w.prog.connect(s.prog.setValue)
             def lv_done(ok, msg):

@@ -119,7 +119,7 @@ class MapBuildW(QThread):
     log = pyqtSignal(str, str); done = pyqtSignal(bool, str); prog = pyqtSignal(int)
     def __init__(s, pcd, sd, mz, xz, max_slope_deg=35.0, max_step_m=0.25,
                  wait_seconds=12, v3_mode=False, min_points_per_cell=3,
-                 out_prefix_name="map", absolute_z=False):
+                 out_prefix_name="map", absolute_z=False, obstacle_only=None):
         super().__init__()
         s.pcd = pcd
         s.sd = sd
@@ -128,7 +128,10 @@ class MapBuildW(QThread):
         s.max_slope_deg = max_slope_deg
         s.max_step_m = max_step_m
         s.wait_seconds = wait_seconds
-        s.v3_mode = v3_mode
+        # obstacle_only: skip traversability + floor sidecars (V3 and V4 semantics).
+        # Backward-compat: v3_mode=True still implies obstacle_only.
+        s.obstacle_only = bool(obstacle_only if obstacle_only is not None else v3_mode)
+        s.v3_mode = s.obstacle_only  # kept for any external references
         s.min_points_per_cell = min_points_per_cell
         s.out_prefix_name = out_prefix_name
         s.absolute_z = absolute_z
@@ -274,13 +277,13 @@ class MapBuildW(QThread):
                 s.done.emit(False, "2D map generation failed")
                 return
 
-            if s.v3_mode:
-                # V3: obstacle map only — no traversability or floor sidecars
+            if s.obstacle_only:
+                # Obstacle map only — no traversability or floor sidecars
                 s.prog.emit(95)
                 if os.path.isfile(out_prefix + ".pgm") and os.path.isfile(out_prefix + ".yaml"):
                     s.log.emit(f"Saved: {out_prefix}.pgm", "success")
                     s.log.emit(f"Saved: {out_prefix}.yaml", "success")
-                    s.log.emit("[V3] Traversability/floor sidecars skipped — obstacle map is the base.", "info")
+                    s.log.emit("[Map] Traversability/floor sidecars skipped — obstacle map only.", "info")
                     s._killall()
                     s.prog.emit(100)
                     s.done.emit(True, out_prefix)
