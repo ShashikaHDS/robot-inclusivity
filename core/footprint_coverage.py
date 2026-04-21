@@ -231,6 +231,35 @@ def compute_footprint_reachable(
     visited = np.zeros((_N_ORIENTS, H, W), dtype=bool)
     q = deque()
     seeds_r, seeds_c = np.where(start_mask > 0)
+
+    # If none of the requested start cells have a collision-free orientation,
+    # nudge the seed to the nearest free cell within a small search radius.
+    # This mimics the inflation path's "snap to largest component" behaviour
+    # without silently jumping across an obstacle into a sealed room.
+    def _has_any_fit(r, c):
+        return bool((collide_cube[:, r, c] == 0).any())
+
+    any_fit = any(_has_any_fit(int(r), int(c))
+                  for r, c in zip(seeds_r.tolist()[:256], seeds_c.tolist()[:256]))
+    if not any_fit and seeds_r.size > 0:
+        snapped = False
+        for max_r in (3, 6, 12, 24):
+            r0 = int(seeds_r[0]); c0 = int(seeds_c[0])
+            r_lo = max(0, r0 - max_r); r_hi = min(H, r0 + max_r + 1)
+            c_lo = max(0, c0 - max_r); c_hi = min(W, c0 + max_r + 1)
+            free_any = (collide_cube[:, r_lo:r_hi, c_lo:c_hi] == 0).any(axis=0)
+            if free_any.any():
+                # Nearest free cell within window (by Manhattan distance)
+                local_r, local_c = np.where(free_any)
+                best = np.argmin(np.abs(local_r - (r0 - r_lo)) + np.abs(local_c - (c0 - c_lo)))
+                nr = int(r_lo + local_r[best]); nc = int(c_lo + local_c[best])
+                seeds_r = np.array([nr]); seeds_c = np.array([nc])
+                log(f"[footprint] Start cell snapped from ({r0},{c0}) to ({nr},{nc}) within r≤{max_r}.", "warn")
+                snapped = True
+                break
+        if not snapped:
+            log("[footprint] Start cell has no fit and no free cell within 24-px radius.", "warn")
+
     for r, c in zip(seeds_r.tolist(), seeds_c.tolist()):
         for k in range(_N_ORIENTS):
             if not collide_cube[k, r, c] and not visited[k, r, c]:

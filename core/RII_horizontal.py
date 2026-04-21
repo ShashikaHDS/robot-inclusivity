@@ -960,22 +960,15 @@ def run_coverage(
         halfL = params.get('halfL', params.get('radius', 0.35))
         blocked2d = blocked.reshape(h, w)
 
-        # Seed: use selection if provided, else a single cell at the start
-        if sel_mask is not None:
-            seed_arr = np.asarray(sel_mask)
-            if seed_arr.ndim == 1 and seed_arr.size == h * w:
-                seed_arr = seed_arr.reshape(h, w)
-            if seed_arr.shape != (h, w):
-                L(f"[{label}] sel_mask shape {seed_arr.shape} mismatch; falling back to point seed.", "warn")
-                seed_arr = None
-        else:
-            seed_arr = None
-        if seed_arr is None:
-            sx_fine = max(0, min(int((start_x - ox) / res), w - 1))
-            sy_fine = max(0, min(int((start_y - oy) / res), h - 1))
-            seed_arr = np.zeros((h, w), dtype=np.uint8)
-            seed_arr[sy_fine, sx_fine] = 1
-        seed_mask = (seed_arr.astype(bool)).astype(np.uint8)
+        # Seed from a SINGLE start cell (the user's start point). The
+        # selection rectangle is already applied to `blocked` earlier
+        # as a BOUNDARY; if we also used it as seeds, cells inside sealed
+        # rooms enclosed by the selection would independently flood-fill
+        # and look reachable even though the robot can't reach them.
+        sx_fine = max(0, min(int((start_x - ox) / res), w - 1))
+        sy_fine = max(0, min(int((start_y - oy) / res), h - 1))
+        seed_mask = np.zeros((h, w), dtype=np.uint8)
+        seed_mask[sy_fine, sx_fine] = 1
 
         t0 = time.time()
         reachable2d, fp_meta = compute_footprint_reachable(
