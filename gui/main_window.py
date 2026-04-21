@@ -2829,10 +2829,26 @@ class MainWin(QMainWindow):
             pts = load_xyz_points(p)
             preset = estimate_ground_preserving_preset(pts)
             floor_z = preset["floor_anchor_z"]
+            s._last_floor_anchor_z = floor_z
             # Auto-set a sensible Z-clip ceiling so the user can toggle roof removal
             if hasattr(s, '_zclip_spin') and not s._zclip_cb.isChecked():
                 s._zclip_spin.setValue(round(floor_z + max(xz, 1.0), 2))
-            if mz >= 0 and xz >= 0:
+            if s._v4_mode and mz >= 0 and xz >= 0:
+                abs_min = floor_z + mz
+                abs_max = floor_z + xz
+                s.floor_status.setText(
+                    f"Floor detected at {floor_z:.3f} m  |  "
+                    f"Slab = floor + [max_step {mz:.2f}, robot_height {xz:.2f}] m  |  "
+                    f"absolute: [{abs_min:.2f}, {abs_max:.2f}] m  |  "
+                    f"max_slope={s.t_slope.value():.0f}° (traversability only)"
+                )
+                s._log(
+                    f"[V4] Building obstacle map. Floor={floor_z:.3f} m. "
+                    f"Slab (floor-relative): max_step={mz:.2f} → robot_height={xz:.2f} m. "
+                    f"Absolute Z: [{abs_min:.2f}, {abs_max:.2f}] m.",
+                    "info",
+                )
+            elif mz >= 0 and xz >= 0:
                 abs_min = floor_z + mz
                 abs_max = floor_z + xz
                 s.floor_status.setText(
@@ -2841,18 +2857,21 @@ class MainWin(QMainWindow):
                     f"min_z ignores obstacles below {mz:.2f} m above floor (robot climbs over)  |  "
                     f"max_slope={s.t_slope.value():.0f} deg, max_step={s.t_step.value():.2f} m"
                 )
+                s._log(
+                    f"Floor auto-detected at {floor_z:.3f} m. "
+                    f"Floor-relative Z slice: [{abs_min:.3f}, {abs_max:.3f}] m",
+                    "info",
+                )
             else:
                 s.floor_status.setText(
                     f"Floor detected at {floor_z:.3f} m  |  "
                     f"Absolute Z mode: [{mz:.3f}, {xz:.3f}] m"
                 )
-            s._log(
-                f"Floor auto-detected at {floor_z:.3f} m. "
-                f"{'Floor-relative' if mz >= 0 and xz >= 0 else 'Absolute'} "
-                f"Z slice: [{abs_min if mz >= 0 and xz >= 0 else mz:.3f}, "
-                f"{abs_max if mz >= 0 and xz >= 0 else xz:.3f}] m",
-                "info",
-            )
+                s._log(
+                    f"Floor auto-detected at {floor_z:.3f} m. "
+                    f"Absolute Z slice: [{mz:.3f}, {xz:.3f}] m",
+                    "info",
+                )
         except Exception:
             s.floor_status.setText("")
 
