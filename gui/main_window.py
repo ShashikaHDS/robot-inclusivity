@@ -1543,7 +1543,6 @@ class MainWin(QMainWindow):
         "edit_ref_overlay",
         "e_pgm", "e_yaml", "e_sem_pcd",
         "sel_mode", "rii_mode", "planner_combo",
-        "cb_accurate_footprint", "cb_diff_drive",
         "rs", "rw", "rl", "as_", "ar", "aw", "al",
         "sem_filter",
         "rv_wall_min_h", "rv_wall_max_h", "rv_voxel", "rv_reach", "rv_angle",
@@ -2044,26 +2043,6 @@ class MainWin(QMainWindow):
         s.planner_row.setLayout(ph)
         s.planner_row.hide()
         l5.addWidget(s.planner_row)
-
-        # ── Accurate footprint fit (rotation-aware + differential drive) ──
-        acc_row = QHBoxLayout()
-        s.cb_accurate_footprint = QCheckBox("Accurate footprint fit")
-        s.cb_accurate_footprint.setToolTip(
-            "Rotate the robot footprint at 8 orientations and check fit per cell\n"
-            "instead of axis-aligned obstacle inflation. Recovers tight corners\n"
-            "and diagonal passages a real robot can squeeze through."
-        )
-        acc_row.addWidget(s.cb_accurate_footprint)
-        s.cb_diff_drive = QCheckBox("Differential drive")
-        s.cb_diff_drive.setChecked(True)
-        s.cb_diff_drive.setToolTip(
-            "When ticked: the robot must face the direction it moves (rotate-in-place\n"
-            "+ forward). When unticked: holonomic — robot can strafe in any direction\n"
-            "regardless of heading (matches omnidirectional bases)."
-        )
-        acc_row.addWidget(s.cb_diff_drive)
-        acc_row.addStretch()
-        l5.addLayout(acc_row)
 
         # Reference robot
         l5.addWidget(QLabel("─── Reference Robot (comparison only) ───"))
@@ -3569,8 +3548,6 @@ class MainWin(QMainWindow):
                     floor_sidecar,
                     planner=planner,
                     ground_analysis_result=None,  # Reference robot passes all ramps
-                    accurate_footprint=s.cb_accurate_footprint.isChecked() if hasattr(s, "cb_accurate_footprint") else False,
-                    footprint_motion="differential" if (hasattr(s, "cb_diff_drive") and s.cb_diff_drive.isChecked()) else "holonomic",
                 )
                 s.ref_result_sig.emit(r, pgm)
             except Exception as e:
@@ -3649,8 +3626,6 @@ class MainWin(QMainWindow):
                     floor_sidecar,
                     planner=planner,
                     ground_analysis_result=getattr(s, '_ground_result', None),
-                    accurate_footprint=s.cb_accurate_footprint.isChecked() if hasattr(s, "cb_accurate_footprint") else False,
-                    footprint_motion="differential" if (hasattr(s, "cb_diff_drive") and s.cb_diff_drive.isChecked()) else "holonomic",
                 )
                 s.act_result_sig.emit(r, pgm)
             except Exception as e:
