@@ -3805,14 +3805,23 @@ class MainWin(QMainWindow):
         if not s.act_r:
             return
         aa = s._result_area(s.act_r)
-        floor_area = s._result_floor_area(s.act_r)
-        rii = (aa / floor_area * 100) if floor_area > 0 else 0
+        # RII Horizontal denominator: the REFERENCE robot's covered area
+        # (the theoretical-best coverage for an ideal small robot on the same
+        # map). Falls back to the raw floor area only if Reference hasn't
+        # been run yet so the panel always has something to show.
+        if s.ref_r and s._results_share_map():
+            denom = s._result_area(s.ref_r)
+            denom_label = "ref robot area"
+        else:
+            denom = s._result_floor_area(s.act_r)
+            denom_label = "floor area (run Reference for normalised RII)"
+        rii = (aa / denom * 100) if denom > 0 else 0
         planner_name = s.act_r.get("planner", "")
         mode_label = f"With {planner_name}" if planner_name else "Without Path Planner"
         s.riiv.setText(f"{rii:.1f}%")
-        s.riis.setText(f"{aa:.2f} / {floor_area:.2f} m² × 100  |  {mode_label}")
+        s.riis.setText(f"{aa:.2f} / {denom:.2f} m² ({denom_label}) × 100  |  {mode_label}")
         s.riif.show()
-        s._log(f"★ RII Horizontal = {rii:.1f}%", "gold")
+        s._log(f"★ RII Horizontal = {rii:.1f}%  ({aa:.2f} / {denom:.2f} m², {denom_label})", "gold")
         if s.ref_r and s._results_share_map():
             bg_cmp = getattr(s, '_trav_pixels', None) if getattr(s, '_trav_pixels', None) is not None else getattr(s, '_pgm_pixels', None)
             s._set_img("Compare", render_compare_fast(s.ref_r, s.act_r, bg_pgm=bg_cmp))
@@ -4695,8 +4704,15 @@ class MainWin(QMainWindow):
         if hasattr(s, "bsem_fix_recompute"):
             s.bsem_fix_recompute.setEnabled(True)
         s._sem_improved = improved
-        current_rii = (s._result_area(s.act_r) / max(s._result_floor_area(s.act_r), 1e-9)) * 100.0
-        improved_rii = (s._result_area(improved) / max(s._result_floor_area(improved), 1e-9)) * 100.0
+        # Normalise both "current" and "improved" RII by the same reference
+        # robot area (user's RII formula: actual / reference). Fall back to
+        # floor area if Reference wasn't run.
+        def _rii_denom(result):
+            if s.ref_r and s._results_share_map():
+                return max(s._result_area(s.ref_r), 1e-9)
+            return max(s._result_floor_area(result), 1e-9)
+        current_rii = (s._result_area(s.act_r) / _rii_denom(s.act_r)) * 100.0
+        improved_rii = (s._result_area(improved) / _rii_denom(improved)) * 100.0
         gain = improved_rii - current_rii
         area_gain = s._result_area(improved) - s._result_area(s.act_r)
         if improved.get("removedMode") == "fixation":
