@@ -394,6 +394,7 @@ def simulate_coverage_path(
     start_mask: np.ndarray,
     wall_safety_cells: int = 1,
     row_overlap: float = 0.10,
+    motion_model: str = "differential",
     logf=None,
 ) -> Tuple[np.ndarray, dict]:
     """Simulate a boustrophedon (zig-zag) coverage sweep and return the
@@ -413,7 +414,7 @@ def simulate_coverage_path(
 
     reachable, meta = compute_footprint_reachable(
         blocked, half_w_m, half_l_m, footprint_shape, resolution, start_mask,
-        motion_model="differential",
+        motion_model=motion_model,
         wall_safety_cells=wall_safety_cells,
         logf=log,
     )

@@ -415,6 +415,14 @@ class MainWin(QMainWindow):
         os.makedirs(s.pcd_out, exist_ok=True)
         os.makedirs(s.map_dir, exist_ok=True)
 
+    def _motion_model_key(s):
+        """Return 'differential' or 'holonomic' from the Motion model combo."""
+        if hasattr(s, "motion_model_combo"):
+            t = s.motion_model_combo.currentText().lower()
+            if t.startswith("holo"):
+                return "holonomic"
+        return "differential"
+
     def _coverage_mode_key(s):
         """Map the Coverage Mode combo text to the internal key used by run_coverage."""
         if not hasattr(s, "coverage_mode"):
@@ -1649,7 +1657,7 @@ class MainWin(QMainWindow):
         "edit_ref_overlay",
         "e_pgm", "e_yaml", "e_sem_pcd",
         "sel_mode", "rii_mode", "planner_combo",
-        "coverage_mode", "wall_safety_spin",
+        "coverage_mode", "motion_model_combo", "wall_safety_spin",
         "rs", "rw", "rl", "as_", "ar", "aw", "al",
         "sem_filter",
         "rv_wall_min_h", "rv_wall_max_h", "rv_voxel", "rv_reach", "rv_angle",
@@ -2181,6 +2189,21 @@ class MainWin(QMainWindow):
         )
         cov_row.addWidget(s.coverage_mode, 1)
         l5.addLayout(cov_row)
+
+        # Motion model — only applies to the footprint-fit / coverage-path modes
+        mot_row = QHBoxLayout()
+        mot_row.addWidget(QLabel("Motion model:"))
+        s.motion_model_combo = QComboBox()
+        s.motion_model_combo.addItems(["Differential", "Holonomic"])
+        s.motion_model_combo.setToolTip(
+            "Differential: robot must face the direction it moves (rotate in\n"
+            "place, then drive forward). Typical for wheeled diff-drive bases.\n"
+            "Holonomic: robot can translate in any 8-neighbour direction at any\n"
+            "orientation (strafe). Enables more passages — appropriate for\n"
+            "quadrupeds (Unitree Go2, Spot) and omnidirectional bases."
+        )
+        mot_row.addWidget(s.motion_model_combo, 1)
+        l5.addLayout(mot_row)
 
         # Wall safety margin — only applies to the footprint-fit / coverage-path modes
         safe_row = QHBoxLayout()
@@ -3738,6 +3761,7 @@ class MainWin(QMainWindow):
                     planner=planner,
                     ground_analysis_result=None,  # Reference robot passes all ramps
                     coverage_mode=s._coverage_mode_key(),
+                    footprint_motion=s._motion_model_key(),
                     wall_safety_cells=(s.wall_safety_spin.value() if hasattr(s, "wall_safety_spin") else 0),
                 )
                 s.ref_result_sig.emit(r, pgm)
@@ -3818,6 +3842,7 @@ class MainWin(QMainWindow):
                     planner=planner,
                     ground_analysis_result=s._effective_ground_result(),
                     coverage_mode=s._coverage_mode_key(),
+                    footprint_motion=s._motion_model_key(),
                     wall_safety_cells=(s.wall_safety_spin.value() if hasattr(s, "wall_safety_spin") else 0),
                 )
                 s.act_result_sig.emit(r, pgm)

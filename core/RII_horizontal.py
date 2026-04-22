@@ -980,7 +980,9 @@ def run_coverage(
         if use_coverage_path:
             reachable2d, fp_meta = simulate_coverage_path(
                 blocked2d, halfW, halfL, shape, res, seed_mask,
-                wall_safety_cells=wall_safety_cells, logf=L,
+                wall_safety_cells=wall_safety_cells,
+                motion_model=footprint_motion,
+                logf=L,
             )
             L(f"[{label}] Coverage path simulation done: {time.time()-t0:.2f}s  "
               f"swept={fp_meta['reachable_cells']}  path={fp_meta.get('path_length', 0)}", "success")
