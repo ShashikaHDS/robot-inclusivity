@@ -2187,13 +2187,13 @@ class MainWin(QMainWindow):
         safe_row.addWidget(QLabel("Wall safety (px):"))
         s.wall_safety_spin = QSpinBox()
         s.wall_safety_spin.setRange(0, 5)
-        s.wall_safety_spin.setValue(0)
+        s.wall_safety_spin.setValue(1)
         s.wall_safety_spin.setToolTip(
             "Extra thickening applied to obstacles before footprint-fit collision\n"
             "checks (in pixels). Each pixel is one map cell (e.g. 5 cm at 0.05 m/px).\n"
-            "0 (default): no extra margin — trust the obstacle map as-is.\n"
-            "1: 5 cm margin per wall — closes 1-pixel scan gaps but eats 10 cm of\n"
-            "   effective free space in any corridor.\n"
+            "1 (default): 5 cm margin per wall — closes 1-pixel scan gaps.\n"
+            "0: no extra margin. Use when you need tight legit gaps; costs leak-\n"
+            "   through on walls that are only 1 pixel thin.\n"
             "Used only by the Accurate / Coverage-path modes."
         )
         safe_row.addWidget(s.wall_safety_spin)
