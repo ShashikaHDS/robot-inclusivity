@@ -3361,13 +3361,46 @@ class MainWin(QMainWindow):
             s.mw.clear_transition_overlay()
 
     def _toggle_manual_only(s, checked):
-        """Toggle between showing all ramps vs only manual ramps."""
+        """Toggle between showing all ramps vs only manual ramps.
+
+        Also changes what Run Actual uses: when checked, auto-detected
+        non-traversable ramps are ignored in the coverage computation and
+        only manual ramps are merged into the obstacle map.
+        """
         if checked:
-            s._log("[Ramps] Showing only manually marked ramps.", "info")
+            s._log("[Ramps] Manual-only: auto-detected ramps will be ignored in Run Actual.", "info")
         else:
-            s._log("[Ramps] Showing all ramps (auto + manual).", "info")
+            s._log("[Ramps] Showing all ramps (auto + manual) — both affect Run Actual.", "info")
         if s.b_toggle_ramps.isChecked():
             s._refresh_ramp_overlay()
+
+    def _effective_ground_result(s):
+        """Return the ground_analysis_result to pass into run_coverage().
+
+        Respects the Manual Ramps Only toggle: when checked, drops every
+        auto-detected transition and keeps only those marked _is_manual.
+        Returns None when there's nothing to merge.
+        """
+        gr = getattr(s, '_ground_result', None)
+        if gr is None:
+            return None
+        if not (hasattr(s, 'b_manual_only') and s.b_manual_only.isChecked()):
+            return gr
+        # Filter to manual transitions only
+        from core.ground_analysis import GroundAnalysisResult
+        manual_transitions = [
+            t for t in gr.transitions if getattr(t, '_is_manual', False)
+        ]
+        if not manual_transitions:
+            return None
+        return GroundAnalysisResult(
+            levels=[],
+            transitions=manual_transitions,
+            cell_size=gr.cell_size,
+            grid_origin=gr.grid_origin,
+            grid_shape=gr.grid_shape,
+            level_grid=gr.level_grid,
+        )
 
     def _refresh_ramp_overlay(s):
         """Rebuild and display the ramp overlay based on current settings."""
@@ -3783,7 +3816,7 @@ class MainWin(QMainWindow):
                     trav_sidecar,
                     floor_sidecar,
                     planner=planner,
-                    ground_analysis_result=getattr(s, '_ground_result', None),
+                    ground_analysis_result=s._effective_ground_result(),
                     coverage_mode=s._coverage_mode_key(),
                     wall_safety_cells=(s.wall_safety_spin.value() if hasattr(s, "wall_safety_spin") else 0),
                 )
