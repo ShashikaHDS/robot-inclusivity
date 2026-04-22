@@ -724,6 +724,92 @@ class MainWin(QMainWindow):
         s._log(f"Saved map: {dst_pgm}", "success")
         s._log(f"Saved map config: {dst_yaml}", "success")
 
+    def _import_map_bundle(s):
+        """Copy a user-selected .pgm/.yaml (plus sidecars when present)
+        into this session's map directory, then load it. After import the
+        map is editable via the Draw/Erase tools and is what downstream
+        Steps 3-5 operate on."""
+        src_pgm, _ = QFileDialog.getOpenFileName(
+            s, "Import Map (.pgm)",
+            os.path.dirname(s.e_pgm.text()) if s.e_pgm.text() else WORKSPACE,
+            "Nav2 Map PGM (*.pgm)",
+        )
+        if not src_pgm:
+            return
+        if not os.path.isfile(src_pgm):
+            QMessageBox.warning(s, "Import Map", f"File not found:\n{src_pgm}")
+            return
+
+        dst_dir = s.e_save.text().strip()
+        if not dst_dir:
+            QMessageBox.warning(s, "Import Map", "No session map directory configured.")
+            return
+        os.makedirs(dst_dir, exist_ok=True)
+        dst_pgm = os.path.join(dst_dir, "map.pgm")
+        dst_yaml = os.path.join(dst_dir, "map.yaml")
+
+        # Copy the PGM. The YAML is optional — if missing, we write a minimal one.
+        try:
+            shutil.copy2(src_pgm, dst_pgm)
+        except Exception as exc:
+            QMessageBox.warning(s, "Import Map", f"Failed to copy .pgm:\n{exc}")
+            return
+
+        src_yaml = os.path.splitext(src_pgm)[0] + ".yaml"
+        if os.path.isfile(src_yaml):
+            try:
+                with open(src_yaml, "r", encoding="utf-8") as handle:
+                    yaml_text = handle.read()
+                yaml_text = rewrite_nav2_yaml_image(yaml_text, os.path.basename(dst_pgm))
+                with open(dst_yaml, "w", encoding="utf-8") as handle:
+                    handle.write(yaml_text)
+            except Exception as exc:
+                QMessageBox.warning(s, "Import Map", f"Failed to copy .yaml:\n{exc}")
+                return
+        else:
+            # No YAML alongside → write a minimal default (5 cm/px, origin 0,0).
+            with open(dst_yaml, "w", encoding="utf-8") as handle:
+                handle.write(
+                    f"image: {os.path.basename(dst_pgm)}\n"
+                    "resolution: 0.050\n"
+                    "origin: [0.000, 0.000, 0.000]\n"
+                    "negate: 0\n"
+                    "occupied_thresh: 0.65\n"
+                    "free_thresh: 0.196\n"
+                )
+            s._log(f"[Import] No .yaml alongside the .pgm — wrote a default: {dst_yaml}", "warn")
+
+        # Bring along sidecars if the user saved them previously.
+        for sidecar_fn in (floor_sidecar_path, traversability_sidecar_path):
+            src_side = sidecar_fn(src_pgm)
+            if os.path.isfile(src_side):
+                dst_side = sidecar_fn(dst_pgm)
+                try:
+                    shutil.copy2(src_side, dst_side)
+                    src_side_yaml = os.path.splitext(src_side)[0] + ".yaml"
+                    dst_side_yaml = os.path.splitext(dst_side)[0] + ".yaml"
+                    if os.path.isfile(src_side_yaml):
+                        with open(src_side_yaml, "r", encoding="utf-8") as h_in:
+                            side_text = h_in.read()
+                        side_text = rewrite_nav2_yaml_image(side_text, os.path.basename(dst_side))
+                        with open(dst_side_yaml, "w", encoding="utf-8") as h_out:
+                            h_out.write(side_text)
+                    s._log(f"[Import] Copied sidecar: {os.path.basename(dst_side)}", "info")
+                except Exception as exc:
+                    s._log(f"[Import] Could not copy sidecar {src_side}: {exc}", "warn")
+
+        # Wire the GUI to the imported map and load it
+        s.e_pgm.setText(dst_pgm)
+        s.e_yaml.setText(dst_yaml)
+        s._load_map(dst_pgm)
+        # Advance the stepper — Step 2 is effectively complete
+        try:
+            s._stepper.set_status(1, "complete")
+            s._group_boxes[1].setStatus("complete")
+        except Exception:
+            pass
+        s._log(f"[Import] Imported map: {src_pgm} → {dst_pgm}", "success")
+
     def _selected_map_source_path(s):
         path = s.e_in.text().strip()
         label = "raw input point cloud"
@@ -1888,8 +1974,19 @@ class MainWin(QMainWindow):
 
         s.b4 = QPushButton("Generate 2D Map"); s.b4.setStyleSheet(s._B("#aa66ff"))
         s.b4.clicked.connect(s._step4); l4.addWidget(s.b4)
+        save_row = QHBoxLayout()
         s.b4save = QPushButton("Save Map (.pgm + .yaml) As..."); s.b4save.setStyleSheet(s._B_secondary())
-        s.b4save.clicked.connect(s._save_map_bundle); l4.addWidget(s.b4save)
+        s.b4save.setToolTip("Save the current obstacle map (and any sidecars) to disk, "
+                            "including any brush edits you have applied.")
+        s.b4save.clicked.connect(s._save_map_bundle)
+        save_row.addWidget(s.b4save)
+        s.b4import = QPushButton("Import Map (.pgm)..."); s.b4import.setStyleSheet(s._B_secondary())
+        s.b4import.setToolTip("Load a previously saved .pgm/.yaml pair (with any saved "
+                              "sidecars) into this session so you can keep editing it "
+                              "and run the rest of the pipeline on top.")
+        s.b4import.clicked.connect(s._import_map_bundle)
+        save_row.addWidget(s.b4import)
+        l4.addLayout(save_row)
         s.b_ground = QPushButton("Detect Ramps (RANSAC)"); s.b_ground.setStyleSheet(s._B("#059669"))
         s.b_ground.setToolTip(
             "Run RANSAC ground segmentation to detect ramps.\n"
