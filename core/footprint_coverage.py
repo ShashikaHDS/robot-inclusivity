@@ -314,40 +314,46 @@ def compute_footprint_reachable(
                 q.append((r, c, nk))
 
         # Forward move
-        if is_diff:
-            # Only from orientations aligned with 8-neighbour grid
-            # (0°, 45°, 90°, …, 315°). The 22.5°-offset orientations
-            # (odd k) must pivot before moving.
+        def _try_move(move_dy_dx, move_k=k):
+            """Stamp one grid move at orientation move_k. Returns True if added."""
+            dy, dx = move_dy_dx
+            nr, nc = r + dy, c + dx
+            if not (0 <= nr < H and 0 <= nc < W):
+                return
+            if visited[move_k, nr, nc] or collide_cube[move_k, nr, nc]:
+                return
+            # Corner-cut guard for diagonal moves
+            if dy != 0 and dx != 0:
+                if collide_cube[move_k, r + dy, c] or collide_cube[move_k, r, c + dx]:
+                    return
+            visited[move_k, nr, nc] = True
+            q.append((nr, nc, move_k))
+
+        if motion_model == "differential":
+            # Rotate + forward only from grid-aligned orientations
+            # (0°, 45°, 90°, …, 315°). Odd k must pivot before moving.
             if (k % _MOVES_STRIDE) == 0 or circular:
-                dy_dx = _ORIENT_MOVES.get(k) if (k in _ORIENT_MOVES) else None
+                dy_dx = _ORIENT_MOVES.get(k)
                 if dy_dx is None and circular:
                     al = (k // _MOVES_STRIDE) * _MOVES_STRIDE
                     dy_dx = _ORIENT_MOVES.get(al)
                 if dy_dx is not None:
-                    dy, dx = dy_dx
-                    nr, nc = r + dy, c + dx
-                    if 0 <= nr < H and 0 <= nc < W:
-                        ok = not visited[k, nr, nc] and not collide_cube[k, nr, nc]
-                        # Corner-cut guard: a diagonal move is a simultaneous
-                        # axial motion, so both L-corner cells must also clear.
-                        if ok and dy != 0 and dx != 0:
-                            if collide_cube[k, r + dy, c] or collide_cube[k, r, c + dx]:
-                                ok = False
-                        if ok:
-                            visited[k, nr, nc] = True
-                            q.append((nr, nc, k))
+                    _try_move(dy_dx)
+        elif motion_model == "combined":
+            # Go2 / quadruped style: forward, backward, strafe-left, strafe-right
+            # (4 moves at 0/90/180/270° offsets relative to heading). No
+            # diagonal body motion — robot rotates to an aligned heading for
+            # that. Enabled only at grid-aligned orientations.
+            if (k % _MOVES_STRIDE) == 0 or circular:
+                for rel_offset in (0, 4, 8, 12):  # 0°, 90°, 180°, 270° rel to heading
+                    move_k_dir = (k + rel_offset) % _N_ORIENTS
+                    dy_dx = _ORIENT_MOVES.get(move_k_dir)
+                    if dy_dx is not None:
+                        _try_move(dy_dx)
         else:
             # Holonomic: any 8-neighbour, any orientation
             for (dy, dx) in _ORIENT_MOVES.values():
-                nr, nc = r + dy, c + dx
-                if 0 <= nr < H and 0 <= nc < W:
-                    ok = not visited[k, nr, nc] and not collide_cube[k, nr, nc]
-                    if ok and dy != 0 and dx != 0:
-                        if collide_cube[k, r + dy, c] or collide_cube[k, r, c + dx]:
-                            ok = False
-                    if ok:
-                        visited[k, nr, nc] = True
-                        q.append((nr, nc, k))
+                _try_move((dy, dx))
 
     log(f"[footprint] BFS visited {states_expanded} states in {time.time() - t0:.2f}s", "info")
 

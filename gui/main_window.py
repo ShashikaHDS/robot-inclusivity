@@ -416,11 +416,13 @@ class MainWin(QMainWindow):
         os.makedirs(s.map_dir, exist_ok=True)
 
     def _motion_model_key(s):
-        """Return 'differential' or 'holonomic' from the Motion model combo."""
+        """Return 'differential', 'combined', or 'holonomic' from the Motion model combo."""
         if hasattr(s, "motion_model_combo"):
             t = s.motion_model_combo.currentText().lower()
             if t.startswith("holo"):
                 return "holonomic"
+            if t.startswith("combi"):
+                return "combined"
         return "differential"
 
     def _coverage_mode_key(s):
@@ -2194,13 +2196,16 @@ class MainWin(QMainWindow):
         mot_row = QHBoxLayout()
         mot_row.addWidget(QLabel("Motion model:"))
         s.motion_model_combo = QComboBox()
-        s.motion_model_combo.addItems(["Differential", "Holonomic"])
+        s.motion_model_combo.addItems(["Differential", "Combined", "Holonomic"])
         s.motion_model_combo.setToolTip(
-            "Differential: robot must face the direction it moves (rotate in\n"
-            "place, then drive forward). Typical for wheeled diff-drive bases.\n"
-            "Holonomic: robot can translate in any 8-neighbour direction at any\n"
-            "orientation (strafe). Enables more passages — appropriate for\n"
-            "quadrupeds (Unitree Go2, Spot) and omnidirectional bases."
+            "Differential: rotate in place, drive forward along heading only.\n"
+            "    Typical for wheeled diff-drive bases (Turtlebot, AGVs).\n"
+            "Combined: forward/backward + lateral strafe (90° left/right) from\n"
+            "    grid-aligned orientations. No diagonal body motion — robot\n"
+            "    pivots to an aligned heading first. Matches quadruped gaits\n"
+            "    (Unitree Go2, Spot): natural forward walk + sidestep.\n"
+            "Holonomic: translate in any of the 8 grid directions from any\n"
+            "    orientation. For omnidirectional bases (mecanum, swerve)."
         )
         mot_row.addWidget(s.motion_model_combo, 1)
         l5.addLayout(mot_row)
