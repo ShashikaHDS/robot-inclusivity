@@ -826,6 +826,7 @@ def run_coverage(
     accurate_footprint=False,
     footprint_motion="differential",
     coverage_mode="inflation",  # "inflation" | "footprint_fit" | "coverage_path"
+    wall_safety_cells=0,
 ):
     """Horizontal RII area computation."""
     L = logf if logf else lambda m, c="": None
@@ -978,16 +979,17 @@ def run_coverage(
         use_coverage_path = (coverage_mode == "coverage_path")
         if use_coverage_path:
             reachable2d, fp_meta = simulate_coverage_path(
-                blocked2d, halfW, halfL, shape, res, seed_mask, logf=L,
+                blocked2d, halfW, halfL, shape, res, seed_mask,
+                wall_safety_cells=wall_safety_cells, logf=L,
             )
             L(f"[{label}] Coverage path simulation done: {time.time()-t0:.2f}s  "
               f"swept={fp_meta['reachable_cells']}  path={fp_meta.get('path_length', 0)}", "success")
         else:
             reachable2d, fp_meta = compute_footprint_reachable(
                 blocked2d, halfW, halfL, shape, res, seed_mask,
-                motion_model=footprint_motion, logf=L,
+                motion_model=footprint_motion,
+                wall_safety_cells=wall_safety_cells, logf=L,
             )
-            # visited_cube is large — drop before we build the result dict
             fp_meta.pop("visited_cube", None)
             L(f"[{label}] Accurate footprint fit done: {time.time()-t0:.2f}s  "
               f"reachable={fp_meta['reachable_cells']}  states={fp_meta['states_expanded']}", "success")

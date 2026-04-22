@@ -177,7 +177,7 @@ def compute_footprint_reachable(
     resolution: float,            # meters per pixel
     start_mask: np.ndarray,       # (H, W) uint8 or 1D h*w seed
     motion_model: str = "differential",  # 'differential' or 'holonomic'
-    wall_safety_cells: int = 1,   # thicken obstacles by this many cells
+    wall_safety_cells: int = 0,   # extra obstacle thickening (cells). 0 = off.
     logf=None,
 ) -> Tuple[np.ndarray, dict]:
     """Return (reachable_mask, meta).
@@ -186,9 +186,11 @@ def compute_footprint_reachable(
     sweeps, respecting rotation and diff-drive motion.
 
     wall_safety_cells: pre-dilate obstacles by this radius before
-    collision checks. 1 (default, 5 cm at 0.05 m/px) closes 1-pixel
-    gaps and sub-pixel scan artifacts so the rotated footprint can't
-    slip through thin walls. Set to 0 to disable.
+    collision checks. Default 0 — the conservative supersampled
+    rasterisation already prevents the footprint from slipping through
+    a *correctly drawn* wall. Bump to 1 (5 cm) if your PGM has 1-pixel
+    or sub-pixel scan artifacts that the footprint slips through; the
+    cost is ~5 cm of effective gap width lost on each side.
     """
     log = logf if logf else (lambda m, c="": None)
     H, W = blocked.shape
@@ -391,7 +393,7 @@ def simulate_coverage_path(
     footprint_shape: str,
     resolution: float,
     start_mask: np.ndarray,
-    wall_safety_cells: int = 1,
+    wall_safety_cells: int = 0,
     row_overlap: float = 0.10,
     logf=None,
 ) -> Tuple[np.ndarray, dict]:

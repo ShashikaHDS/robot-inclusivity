@@ -1649,7 +1649,7 @@ class MainWin(QMainWindow):
         "edit_ref_overlay",
         "e_pgm", "e_yaml", "e_sem_pcd",
         "sel_mode", "rii_mode", "planner_combo",
-        "coverage_mode",
+        "coverage_mode", "wall_safety_spin",
         "rs", "rw", "rl", "as_", "ar", "aw", "al",
         "sem_filter",
         "rv_wall_min_h", "rv_wall_max_h", "rv_voxel", "rv_reach", "rv_angle",
@@ -2181,6 +2181,24 @@ class MainWin(QMainWindow):
         )
         cov_row.addWidget(s.coverage_mode, 1)
         l5.addLayout(cov_row)
+
+        # Wall safety margin — only applies to the footprint-fit / coverage-path modes
+        safe_row = QHBoxLayout()
+        safe_row.addWidget(QLabel("Wall safety (px):"))
+        s.wall_safety_spin = QSpinBox()
+        s.wall_safety_spin.setRange(0, 5)
+        s.wall_safety_spin.setValue(0)
+        s.wall_safety_spin.setToolTip(
+            "Extra thickening applied to obstacles before footprint-fit collision\n"
+            "checks (in pixels). Each pixel is one map cell (e.g. 5 cm at 0.05 m/px).\n"
+            "0 (default): no extra margin — trust the obstacle map as-is.\n"
+            "1: 5 cm margin per wall — closes 1-pixel scan gaps but eats 10 cm of\n"
+            "   effective free space in any corridor.\n"
+            "Used only by the Accurate / Coverage-path modes."
+        )
+        safe_row.addWidget(s.wall_safety_spin)
+        safe_row.addStretch()
+        l5.addLayout(safe_row)
 
         # Reference robot
         l5.addWidget(QLabel("─── Reference Robot (comparison only) ───"))
@@ -3687,6 +3705,7 @@ class MainWin(QMainWindow):
                     planner=planner,
                     ground_analysis_result=None,  # Reference robot passes all ramps
                     coverage_mode=s._coverage_mode_key(),
+                    wall_safety_cells=(s.wall_safety_spin.value() if hasattr(s, "wall_safety_spin") else 0),
                 )
                 s.ref_result_sig.emit(r, pgm)
             except Exception as e:
@@ -3766,6 +3785,7 @@ class MainWin(QMainWindow):
                     planner=planner,
                     ground_analysis_result=getattr(s, '_ground_result', None),
                     coverage_mode=s._coverage_mode_key(),
+                    wall_safety_cells=(s.wall_safety_spin.value() if hasattr(s, "wall_safety_spin") else 0),
                 )
                 s.act_result_sig.emit(r, pgm)
             except Exception as e:
