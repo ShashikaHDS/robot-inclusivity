@@ -379,5 +379,127 @@ def compute_footprint_reachable(
         "reachable_cells": int(swept.sum()),
         "center_cells": int(visited.any(axis=0).sum()),
         "seed_cells": int(seeds_r.size),
+        "visited_cube": visited,  # (N_orient, H, W) bool — center reachability per orientation
     }
     return swept, meta
+
+
+def simulate_coverage_path(
+    blocked: np.ndarray,
+    half_w_m: float,
+    half_l_m: float,
+    footprint_shape: str,
+    resolution: float,
+    start_mask: np.ndarray,
+    wall_safety_cells: int = 1,
+    row_overlap: float = 0.10,
+    logf=None,
+) -> Tuple[np.ndarray, dict]:
+    """Simulate a boustrophedon (zig-zag) coverage sweep and return the
+    swept body area plus the traced path.
+
+    The robot runs the accurate footprint BFS first to find the set of
+    centers it can actually park the body at; then rows of that mask are
+    visited in lawnmower order, striped at (body width * (1 - overlap)).
+    Output is the union of the body footprint stamped along the path —
+    matches what a real coverage sweep would physically cover.
+
+    row_overlap: fractional overlap between consecutive stripes (0.10 =
+    10% overlap to keep coverage continuous against small reach errors).
+    """
+    log = logf if logf else (lambda m, c="": None)
+    H, W = blocked.shape
+
+    reachable, meta = compute_footprint_reachable(
+        blocked, half_w_m, half_l_m, footprint_shape, resolution, start_mask,
+        motion_model="differential",
+        wall_safety_cells=wall_safety_cells,
+        logf=log,
+    )
+    visited_cube = meta.get("visited_cube")
+    # visited_cube is (_N_ORIENTS, H, W) — we want centers reachable at EAST (k=0)
+    # or WEST (k=8) orientations so the robot can drive horizontally.
+    if visited_cube is not None:
+        horiz_centers = (visited_cube[0] | visited_cube[_N_ORIENTS // 2]).astype(np.uint8)
+    else:
+        horiz_centers = reachable
+
+    # Body height in pixels along the perpendicular-to-heading axis (for east/west, that's Y = half_w_m)
+    stripe_step_m = max(resolution, 2.0 * half_w_m * (1.0 - max(0.0, min(0.9, row_overlap))))
+    stripe_step_px = max(1, int(round(stripe_step_m / resolution)))
+    log(f"[coverage] Boustrophedon stripe step = {stripe_step_px} px "
+        f"({stripe_step_px * resolution * 100:.1f} cm, {row_overlap * 100:.0f}% overlap).", "info")
+
+    # Pre-compute east-facing footprint to stamp along the path
+    if footprint_shape == "circular":
+        fp = _rasterise_circle_footprint(max(half_w_m, half_l_m), resolution)
+    else:
+        fp = _rasterise_rect_footprint(half_w_m, half_l_m, 0.0, resolution)
+    fh, fw = fp.shape
+
+    # Find rows with any horizontal-facing reachable center
+    row_has_center = horiz_centers.any(axis=1)
+    active_rows = np.where(row_has_center)[0]
+    if active_rows.size == 0:
+        log("[coverage] No horizontally-reachable centers — coverage is empty.", "warn")
+        return np.zeros((H, W), dtype=np.uint8), {
+            "states_expanded": 0, "orientations": _N_ORIENTS,
+            "reachable_cells": 0, "center_cells": 0, "seed_cells": int(start_mask.sum()),
+            "path_length": 0, "mode": "coverage_path",
+        }
+
+    # Stripe rows, starting from the seed row and expanding outwards
+    seed_rows = np.where(start_mask.any(axis=1))[0]
+    anchor_row = int(seed_rows[0]) if seed_rows.size > 0 else int(active_rows[0])
+    min_r, max_r = int(active_rows[0]), int(active_rows[-1])
+
+    # Build a list of stripe rows centred near the anchor
+    stripes = []
+    r = anchor_row
+    while r <= max_r:
+        if r in active_rows:
+            stripes.append(r)
+        r += stripe_step_px
+    r = anchor_row - stripe_step_px
+    while r >= min_r:
+        if r in active_rows:
+            stripes.append(r)
+        r -= stripe_step_px
+    stripes = sorted(set(stripes))
+
+    # Trace zig-zag: left-to-right, then right-to-left, alternating
+    swept = np.zeros((H, W), dtype=np.uint8)
+    path = []
+    direction = 1
+    for row in stripes:
+        cols = np.where(horiz_centers[row])[0]
+        if cols.size == 0:
+            continue
+        ordered = cols if direction == 1 else cols[::-1]
+        for c in ordered:
+            path.append((int(row), int(c)))
+            y0 = row - fh // 2; y1 = y0 + fh
+            x0 = c - fw // 2;   x1 = x0 + fw
+            y0c = max(0, y0); y1c = min(H, y1)
+            x0c = max(0, x0); x1c = min(W, x1)
+            ly0 = y0c - y0;   lx0 = x0c - x0
+            ly1 = ly0 + (y1c - y0c); lx1 = lx0 + (x1c - x0c)
+            swept[y0c:y1c, x0c:x1c] |= fp[ly0:ly1, lx0:lx1]
+        direction = -direction
+
+    # Clip to obstacle-free (safety belt; should already be clean)
+    swept &= (blocked == 0).astype(np.uint8)
+
+    log(f"[coverage] Stripes={len(stripes)}, path={len(path)} waypoints, "
+        f"swept_cells={int(swept.sum())}.", "success")
+    return swept, {
+        "states_expanded": meta.get("states_expanded", 0),
+        "orientations": _N_ORIENTS,
+        "reachable_cells": int(swept.sum()),
+        "center_cells": int(horiz_centers.sum()),
+        "seed_cells": int(start_mask.sum()),
+        "path_length": len(path),
+        "path": path,
+        "stripe_step_px": stripe_step_px,
+        "mode": "coverage_path",
+    }

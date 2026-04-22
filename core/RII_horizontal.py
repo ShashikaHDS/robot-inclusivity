@@ -825,6 +825,7 @@ def run_coverage(
     ground_analysis_result=None,
     accurate_footprint=False,
     footprint_motion="differential",
+    coverage_mode="inflation",  # "inflation" | "footprint_fit" | "coverage_path"
 ):
     """Horizontal RII area computation."""
     L = logf if logf else lambda m, c="": None
@@ -952,9 +953,12 @@ def run_coverage(
     # ═══════════════════════════════════════════════════════════════════════
     # Accurate footprint-fit branch — rotation-aware + differential drive.
     # Skips the inflation + coarse-grid planner entirely.
+    # coverage_mode="footprint_fit" → BFS reachable swept-body mask
+    # coverage_mode="coverage_path" → BFS + boustrophedon simulation
+    # (The older accurate_footprint=True flag still maps to "footprint_fit".)
     # ═══════════════════════════════════════════════════════════════════════
-    if accurate_footprint:
-        from core.footprint_coverage import compute_footprint_reachable
+    if accurate_footprint or coverage_mode in ("footprint_fit", "coverage_path"):
+        from core.footprint_coverage import compute_footprint_reachable, simulate_coverage_path
         shape = params.get('shape', 'circular')
         halfW = params.get('halfW', params.get('radius', 0.35))
         halfL = params.get('halfL', params.get('radius', 0.35))
@@ -971,12 +975,22 @@ def run_coverage(
         seed_mask[sy_fine, sx_fine] = 1
 
         t0 = time.time()
-        reachable2d, fp_meta = compute_footprint_reachable(
-            blocked2d, halfW, halfL, shape, res, seed_mask,
-            motion_model=footprint_motion, logf=L,
-        )
-        L(f"[{label}] Accurate footprint fit done: {time.time()-t0:.2f}s  "
-          f"reachable={fp_meta['reachable_cells']}  states={fp_meta['states_expanded']}", "success")
+        use_coverage_path = (coverage_mode == "coverage_path")
+        if use_coverage_path:
+            reachable2d, fp_meta = simulate_coverage_path(
+                blocked2d, halfW, halfL, shape, res, seed_mask, logf=L,
+            )
+            L(f"[{label}] Coverage path simulation done: {time.time()-t0:.2f}s  "
+              f"swept={fp_meta['reachable_cells']}  path={fp_meta.get('path_length', 0)}", "success")
+        else:
+            reachable2d, fp_meta = compute_footprint_reachable(
+                blocked2d, halfW, halfL, shape, res, seed_mask,
+                motion_model=footprint_motion, logf=L,
+            )
+            # visited_cube is large — drop before we build the result dict
+            fp_meta.pop("visited_cube", None)
+            L(f"[{label}] Accurate footprint fit done: {time.time()-t0:.2f}s  "
+              f"reachable={fp_meta['reachable_cells']}  states={fp_meta['states_expanded']}", "success")
 
         # Floor denominator (same rule as the inflation path)
         if trav_mask is not None:

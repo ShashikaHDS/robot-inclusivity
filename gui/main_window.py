@@ -415,6 +415,17 @@ class MainWin(QMainWindow):
         os.makedirs(s.pcd_out, exist_ok=True)
         os.makedirs(s.map_dir, exist_ok=True)
 
+    def _coverage_mode_key(s):
+        """Map the Coverage Mode combo text to the internal key used by run_coverage."""
+        if not hasattr(s, "coverage_mode"):
+            return "inflation"
+        t = s.coverage_mode.currentText()
+        if t.startswith("Accurate"):
+            return "footprint_fit"
+        if t.startswith("Coverage"):
+            return "coverage_path"
+        return "inflation"
+
     def _mk_browse_btn(s, tooltip, on_click):
         from PyQt5.QtWidgets import QStyle
         b = QPushButton(s.style().standardIcon(QStyle.SP_DirOpenIcon), "")
@@ -1543,7 +1554,7 @@ class MainWin(QMainWindow):
         "edit_ref_overlay",
         "e_pgm", "e_yaml", "e_sem_pcd",
         "sel_mode", "rii_mode", "planner_combo",
-        "cb_accurate_footprint",
+        "coverage_mode",
         "rs", "rw", "rl", "as_", "ar", "aw", "al",
         "sem_filter",
         "rv_wall_min_h", "rv_wall_max_h", "rv_voxel", "rv_reach", "rv_angle",
@@ -2045,17 +2056,25 @@ class MainWin(QMainWindow):
         s.planner_row.hide()
         l5.addWidget(s.planner_row)
 
-        # Rotation-aware, differential-drive reachability
-        s.cb_accurate_footprint = QCheckBox("Accurate footprint fit (rotation + diff-drive)")
-        s.cb_accurate_footprint.setToolTip(
-            "Rasterise the robot rectangle at 16 orientations and require the\n"
-            "robot to face the direction it moves (rotate-in-place + forward).\n"
-            "Recovers tight corners and diagonal passages that axis-aligned\n"
-            "inflation rejects.\n"
-            "\n"
-            "A few seconds slower than the default on typical maps."
+        # Coverage mode selector
+        cov_row = QHBoxLayout()
+        cov_row.addWidget(QLabel("Coverage mode:"))
+        s.coverage_mode = QComboBox()
+        s.coverage_mode.addItems([
+            "Default (obstacle inflation)",
+            "Accurate footprint fit",
+            "Coverage path (zig-zag sweep)",
+        ])
+        s.coverage_mode.setToolTip(
+            "Default: fast, axis-aligned obstacle inflation + 4-connected BFS.\n"
+            "Accurate footprint fit: 16-orientation rotation + diff-drive BFS,\n"
+            "    returns the swept body area (cells the robot body passes over).\n"
+            "Coverage path: runs the footprint fit then simulates a boustrophedon\n"
+            "    (zig-zag) sweep over the reachable centres; the swept mask\n"
+            "    matches what a real coverage-plan execution would cover."
         )
-        l5.addWidget(s.cb_accurate_footprint)
+        cov_row.addWidget(s.coverage_mode, 1)
+        l5.addLayout(cov_row)
 
         # Reference robot
         l5.addWidget(QLabel("─── Reference Robot (comparison only) ───"))
@@ -3561,7 +3580,7 @@ class MainWin(QMainWindow):
                     floor_sidecar,
                     planner=planner,
                     ground_analysis_result=None,  # Reference robot passes all ramps
-                    accurate_footprint=s.cb_accurate_footprint.isChecked() if hasattr(s, "cb_accurate_footprint") else False,
+                    coverage_mode=s._coverage_mode_key(),
                 )
                 s.ref_result_sig.emit(r, pgm)
             except Exception as e:
@@ -3640,7 +3659,7 @@ class MainWin(QMainWindow):
                     floor_sidecar,
                     planner=planner,
                     ground_analysis_result=getattr(s, '_ground_result', None),
-                    accurate_footprint=s.cb_accurate_footprint.isChecked() if hasattr(s, "cb_accurate_footprint") else False,
+                    coverage_mode=s._coverage_mode_key(),
                 )
                 s.act_result_sig.emit(r, pgm)
             except Exception as e:
