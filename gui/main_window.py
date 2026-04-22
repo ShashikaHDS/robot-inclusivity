@@ -671,11 +671,20 @@ class MainWin(QMainWindow):
         s._log(f"Saved filtered PCD: {dst}", "success")
 
     def _save_map_bundle(s):
-        src_dir = s.e_save.text().strip()
-        pgm = os.path.join(src_dir, "map.pgm")
-        yml = os.path.join(src_dir, "map.yaml")
+        # Prefer the currently-loaded map (handles multi-floor map_levelN.pgm,
+        # imported maps, manually-browsed .pgm). Fall back to the session's
+        # default map.pgm only if nothing is loaded yet.
+        pgm = s.e_pgm.text().strip() if hasattr(s, "e_pgm") else ""
+        yml = s.e_yaml.text().strip() if hasattr(s, "e_yaml") else ""
+        if not pgm:
+            src_dir = s.e_save.text().strip()
+            pgm = os.path.join(src_dir, "map.pgm")
+        if not yml:
+            yml = os.path.splitext(pgm)[0] + ".yaml"
         if not (os.path.isfile(pgm) and os.path.isfile(yml)):
-            QMessageBox.warning(s, "Error", f"Run Step 2 first\n{pgm}\n{yml}")
+            QMessageBox.warning(s, "Error",
+                                f"Run Step 2 first (or load a map via Import / Step 3 browse):\n"
+                                f"{pgm}\n{yml}")
             return
         dst_yaml, _ = QFileDialog.getSaveFileName(
             s,
