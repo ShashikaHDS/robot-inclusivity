@@ -1759,6 +1759,25 @@ class MainWin(QMainWindow):
         s._ground_result = data.get("ground_result")
         if s._ground_result is not None:
             s._on_ground_result(s._ground_result)
+
+        # Multi-floor state: PGM map + per-level Step 3 results
+        lvl_pgm_map = data.get("level_pgm_map") or {}
+        s._level_pgm_map = {int(k): v for k, v in lvl_pgm_map.items()}
+        s._level_results = data.get("level_results") or {}
+        if s._level_results:
+            # Hydrate ref_r / act_r from the active level if we have it
+            active = data.get("active_level")
+            s._active_level = int(active) if active is not None else None
+            if s._active_level is not None and s._active_level in s._level_results:
+                bucket = s._level_results[s._active_level]
+                if bucket.get("ref"): s.ref_r = bucket["ref"]
+                if bucket.get("act"): s.act_r = bucket["act"]
+            n_ref = sum(1 for b in s._level_results.values() if b.get("ref"))
+            n_act = sum(1 for b in s._level_results.values() if b.get("act"))
+            s._log(f"[Project] Restored Step 3 results: {n_ref} Reference, {n_act} Actual.", "info")
+        if s._level_pgm_map:
+            s._refresh_floor_combo()
+
         s._project_path = f
         s._push_recent(f)
         s.setWindowTitle(f"Robot Inclusivity Index (RII) — {os.path.basename(f)}")
@@ -1786,15 +1805,23 @@ class MainWin(QMainWindow):
                 artifact_paths=s._collect_artifact_paths(),
                 manual_ramps=getattr(s, "_manual_ramps", []),
                 ground_result=getattr(s, "_ground_result", None),
-                project_file=s._project_path,
+                level_pgm_map=getattr(s, "_level_pgm_map", None),
+                level_results=getattr(s, "_level_results", None),
+                active_level=getattr(s, "_active_level", None),
             )
-            save_project(s._project_path, data)
+            save_project(s._project_path, data,
+                          level_results=getattr(s, "_level_results", None))
         except Exception as e:
+            import traceback; traceback.print_exc()
             QMessageBox.warning(s, "Save Project", f"Failed to save:\n{e}")
             return
         s._push_recent(s._project_path)
         s.setWindowTitle(f"Robot Inclusivity Index (RII) — {os.path.basename(s._project_path)}")
-        s._log(f"Saved project: {s._project_path}", "success")
+        try:
+            size_mb = os.path.getsize(s._project_path) / (1024 * 1024)
+            s._log(f"Saved project ({size_mb:.1f} MB): {s._project_path}", "success")
+        except OSError:
+            s._log(f"Saved project: {s._project_path}", "success")
 
     # ══════════════════════════════════════════════════════════════════════
     # _build — construct all UI widgets
