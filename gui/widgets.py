@@ -378,6 +378,13 @@ class MapW(QWidget):
             s.hover_coords.emit(px, py, world_x, world_y)
 
         if s._drag_mode == "edit":
+            # Defensive: if the mouse button is no longer pressed (e.g. user
+            # released outside the widget), end the stroke instead of
+            # interpolating a long straight line back to the stale anchor.
+            if not (e.buttons() & Qt.LeftButton):
+                s._drag_mode = None
+                s._last_edit_pt = None
+                return
             pt2 = s._ic(e.pos(), clamp=True)
             if pt2:
                 # Interpolate between last edit point and current for continuous stroke
@@ -388,7 +395,13 @@ class MapW(QWidget):
                     dx = abs(x1 - x0)
                     dy = abs(y1 - y0)
                     steps = max(dx, dy)
-                    if steps > 0:
+                    # Cap interpolation length: if the gap is huge (lost-mouse,
+                    # window switch, etc.), just stamp the new position rather
+                    # than drawing a line across the whole map.
+                    MAX_INTERPOLATE_PX = 64
+                    if steps > MAX_INTERPOLATE_PX:
+                        s._paint_brush(pt2[0], pt2[1])
+                    elif steps > 0:
                         for i in range(1, steps + 1):
                             t = i / steps
                             ix = int(round(x0 + t * (x1 - x0)))
