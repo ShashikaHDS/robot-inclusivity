@@ -157,7 +157,16 @@ class MapW(QWidget):
             s._edit_overlay = np.full((h, w), 127, dtype=np.uint8)
         s._edit_active = True
         s._edit_undo.clear(); s._edit_redo.clear()
+        # Hide / clear any selection polygon — it would otherwise paint on top
+        # of brush strokes in the same blue outline colour and look like a
+        # bug ("triangle drawn out of nowhere").
+        s._sm = False
+        s._poly = []
+        s._ds = None
+        s._de = None
+        s.sel = None
         s._update_cursor()
+        s.update()
 
     def disable_edit(s):
         s._edit_active = False
