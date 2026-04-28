@@ -195,8 +195,12 @@ def analyze_semantic_rii(ref_result, act_result, label_grid, yaml_data, label_na
     res = yaml_data['resolution']
     cell_area = res * res
 
-    ref_cov = ref_result['covPx']
-    act_cov = act_result['covPx']
+    # Normalise to 1-D (h*w,) so the boolean math broadcasts against
+    # label_grid regardless of whether Step 3 produced a 1-D mask
+    # (Default inflation path) or a 2-D one (Accurate footprint fit /
+    # Coverage path).
+    ref_cov = np.asarray(ref_result['covPx']).reshape(-1)
+    act_cov = np.asarray(act_result['covPx']).reshape(-1)
 
     # Missed = covered by reference but NOT by actual
     missed = (ref_cov == 1) & (act_cov == 0)
