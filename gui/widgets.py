@@ -427,10 +427,28 @@ class MapW(QWidget):
                 s._last_edit_pt = pt2
             return
         if s._drag_mode == "select":
+            # Defensive: if the mouse button isn't actually held any more
+            # (user released the mouse outside the widget), end the drag
+            # before tacking another point onto the freeform polygon —
+            # otherwise every later hover-move appends a vertex, drawing
+            # a long straight edge across the map.
+            if not (e.buttons() & Qt.LeftButton):
+                s._drag_mode = None
+                return
             if s._selection_mode == "freeform":
                 pt2 = s._ic(e.pos(), clamp=True)
-                if pt2 is not None and (not s._poly or max(abs(pt2[0] - s._poly[-1][0]), abs(pt2[1] - s._poly[-1][1])) >= 2):
-                    s._poly.append(pt2)
+                if pt2 is not None:
+                    last = s._poly[-1] if s._poly else None
+                    if last is None:
+                        s._poly.append(pt2)
+                    else:
+                        gap = max(abs(pt2[0] - last[0]), abs(pt2[1] - last[1]))
+                        # Skip giant jumps (focus loss / cursor warp). A real
+                        # freehand sweep produces dense small steps; a 200-px
+                        # jump in one event means we've lost mouse tracking.
+                        SELECT_GAP_MAX = 64
+                        if gap >= 2 and gap <= SELECT_GAP_MAX:
+                            s._poly.append(pt2)
             else:
                 s._de = s._ic(e.pos(), clamp=True)
             s.update()
