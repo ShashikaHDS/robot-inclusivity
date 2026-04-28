@@ -157,14 +157,18 @@ class MapW(QWidget):
             s._edit_overlay = np.full((h, w), 127, dtype=np.uint8)
         s._edit_active = True
         s._edit_undo.clear(); s._edit_redo.clear()
-        # Hide / clear any selection polygon — it would otherwise paint on top
-        # of brush strokes in the same blue outline colour and look like a
-        # bug ("triangle drawn out of nowhere").
+        # Hide / clear any blue overlay that could otherwise paint on top of
+        # brush strokes and look like a bug (selection polygons, focus
+        # rectangles around ramps, in-progress drag previews, start-point
+        # marker, in-progress polygons).
         s._sm = False
         s._poly = []
         s._ds = None
         s._de = None
         s.sel = None
+        s._focus_rect = None
+        s._focus_label = ""
+        s._start_point = None
         s._update_cursor()
         s.update()
 
