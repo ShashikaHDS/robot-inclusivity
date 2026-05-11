@@ -4816,13 +4816,16 @@ class MainWin(QMainWindow):
         html += f"<p><b>Total gain:</b> +{gain:.1f} m²</p>"
         html += "<hr>"
         html += "<p style='color:#6b7280;font-size:11px'>Improvements ranked by estimated unlock area. "
-        html += "Relocations are filtered by: footprint fits · doesn't block robot path · "
-        html += "doesn't seal doorway · improves coverage; tie-broken by peer proximity then small move.</p>"
+        html += "Every suggestion is a <b>relocation</b> — items are moved, never removed. "
+        html += "Strict placement rules (off the robot's path, away from doorways, near peers, "
+        html += "small physical move) are applied first; if no strict slot exists, the rules are "
+        html += "relaxed step by step until a viable spot is found. The Description column flags "
+        html += "any relaxation so you can override the placement on site.</p>"
         html += "<table border='1' cellpadding='4' cellspacing='0' style='border-collapse:collapse'>"
         html += "<tr style='background:#f0f4ff'><th>#</th><th>Kind</th><th>Description</th><th>Gain</th><th>Cumulative</th></tr>"
         _kind_icon = {
             "relocate_object": "🔄",
-            "remove_object": "📦",
+            # remove_object intentionally absent — the optimizer never emits it now.
             "lower_ramp": "⛰️",
             "widen_corridor": "↔️",
             "add_access": "🚪",

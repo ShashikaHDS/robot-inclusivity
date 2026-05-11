@@ -770,7 +770,8 @@ def score_bottleneck_candidates(act_result, candidates, top_n=20, progress_cb=No
 
 def find_relocation_zones(act_result, candidate, max_zones=5,
                            label_grid=None,
-                           peer_label_id=None):
+                           peer_label_id=None,
+                           relaxation_level=0):
     """Find valid placement positions for a candidate object.
 
     Two-layer pipeline (replaces the old wall+traffic heuristic):
@@ -930,16 +931,24 @@ def find_relocation_zones(act_result, candidate, max_zones=5,
     zone_centroids: list[tuple[int, int]] = []
     DEDUP_CELLS = 20
     MAX_LAYER_A_ZONES = 80  # hard cap so BFS stays under ~5 s per object
+    # Progressive rule relaxation. Higher relaxation_level skips rules so we
+    # can ALWAYS find a relocation slot — never fall back to "Remove".
+    #   0 = all rules (default, strict)
+    #   1 = drop doorway rule (allow placement near narrow passages)
+    #   2 = drop path-clearance rule (allow placement on robot's current path)
+    #   3 = footprint fit only (anywhere it physically fits)
+    enforce_path = (relaxation_level < 2)
+    enforce_doorway = (relaxation_level < 1)
     for fi in valid_ordered:
         if len(zone_centroids) >= MAX_LAYER_A_ZONES:
             break
         r, c = int(fi // w), int(fi % w)
 
         # Rule 2 — coverage-path clearance
-        if path_buffer[r:r + obj_h, c:c + obj_w].any():
+        if enforce_path and path_buffer[r:r + obj_h, c:c + obj_w].any():
             continue
         # Rule 3 — no doorway seal
-        if doorway_cells[r:r + obj_h, c:c + obj_w].any():
+        if enforce_doorway and doorway_cells[r:r + obj_h, c:c + obj_w].any():
             continue
 
         # 20-cell Manhattan deduplication
@@ -961,13 +970,16 @@ def find_relocation_zones(act_result, candidate, max_zones=5,
     BETA_ORIGIN = 0.02  # m² per metre of origin-distance penalty
 
     zones = []
+    # At max relaxation, accept any zone whose net_gain isn't worse than
+    # leaving the object in place (so we always have *something* to suggest).
+    min_acceptable_gain = 0.0 if relaxation_level < 3 else -float('inf')
     for zone_id, (zr, zc) in enumerate(zone_centroids):
         # Simulate placement
         place_blocked = test_blocked.copy()
         place_blocked[zr:zr + obj_h, zc:zc + obj_w] = 1
         placed_cells, _ = _quick_reachable_area(place_blocked, floor2d, params, res)
         net_gain = float(placed_cells - original_accessible) * cell_area
-        if net_gain <= 0:
+        if net_gain <= min_acceptable_gain:
             continue  # would hurt or no-op
 
         # Peer proximity (smaller distance is better → invert)
@@ -998,6 +1010,7 @@ def find_relocation_zones(act_result, candidate, max_zones=5,
             "combined_score": float(combined),
             "footprint_hw": (obj_h, obj_w),
             "rules_passed": True,
+            "relaxation_level": int(relaxation_level),
         })
 
     # Rank: combined score, then peer proximity, then small origin move,
@@ -1102,15 +1115,25 @@ def optimize_multi_object_relocation(act_result, candidates, max_moves=10,
         _, acc = _quick_reachable_area(current_blocked, floor2d, params, res)
         temp_result["covPx"] = acc.ravel().copy()
 
-        zones = find_relocation_zones(
-            temp_result, best_cand, max_zones=1,
-            label_grid=label_grid,
-            peer_label_id=best_cand.get("label"),
-        )
+        # Try strict rules first, relax progressively until we find SOMEWHERE
+        # to put the object. We never fall back to "Remove" — the user
+        # explicitly wants every move to be a relocation.
+        zones = []
+        used_relax = 0
+        for relax in (0, 1, 2, 3):
+            zones = find_relocation_zones(
+                temp_result, best_cand, max_zones=3,
+                label_grid=label_grid,
+                peer_label_id=best_cand.get("label"),
+                relaxation_level=relax,
+            )
+            if zones:
+                used_relax = relax
+                break
 
         current_blocked[rows, cols] = 0
         to_rc = None
-        if zones and zones[0]["net_area_gain"] > 0:
+        if zones:
             zr, zc = zones[0]["top_left_rc"]
             fh, fw = zones[0]["footprint_hw"]
             current_blocked[zr:zr + fh, zc:zc + fw] = 1
@@ -1122,18 +1145,27 @@ def optimize_multi_object_relocation(act_result, candidates, max_moves=10,
         cumulative_gain += step_gain
         moved_ids.add(best_cand["id"])
 
-        kind = "relocate_object" if to_rc else "remove_object"
+        kind = "relocate_object"
+        name = best_cand.get('name', best_cand['id'])
         if to_rc:
             wx = (to_rc[1] + obj_w / 2.0) * res
             wy = (to_rc[0] + obj_h / 2.0) * res
-            description = f"Relocate {best_cand.get('name', best_cand['id'])} → ({wx:.1f}, {wy:.1f}) m"
-            if zones and zones[0].get("peer_score", 0) > 0:
+            description = f"Relocate {name} → ({wx:.1f}, {wy:.1f}) m"
+            if used_relax == 0 and zones and zones[0].get("peer_score", 0) > 0:
                 description += "  (near peers)"
+            elif used_relax == 1:
+                description += "  (near a doorway — pick an alternative if possible)"
+            elif used_relax == 2:
+                description += "  (close to a robot route — keep clear when moving)"
+            elif used_relax == 3:
+                description += "  (best-fit only — verify accessibility on site)"
         else:
-            description = f"Remove {best_cand.get('name', best_cand['id'])}"
+            # Should never trigger now that we always pursue a relocation,
+            # but keep a graceful "manual relocate" label as a safety net.
+            description = f"Relocate {name} — no auto-suggested slot, pick any free spot"
         moves.append({
             "candidate_id": best_cand["id"],
-            "name": best_cand.get("name", f"Object #{best_cand['id']}"),
+            "name": name,
             "fixation": best_cand.get("fixation", ""),
             "from_indices": flat.copy(),
             "to_rc": to_rc,
@@ -1141,10 +1173,11 @@ def optimize_multi_object_relocation(act_result, candidates, max_moves=10,
             "step_gain": step_gain,
             "cumulative_gain": cumulative_gain,
             "new_accessible_area": float(new_cells) * cell_area,
-            "action": "Relocate" if to_rc else "Remove",
+            "action": "Relocate",
             "kind": kind,
             "description": description,
             "zone_meta": (zones[0] if zones else None),
+            "relaxation_level": int(used_relax) if to_rc else None,
         })
 
         if progress_cb:
