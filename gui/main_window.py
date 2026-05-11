@@ -4609,6 +4609,27 @@ class MainWin(QMainWindow):
 
         candidates = list(s._sem_candidates)
 
+        # Same selection-aware filtering as the optimizer flow.
+        sel_mask_1d = s._make_sel_mask() if hasattr(s, "_make_sel_mask") else None
+        if sel_mask_1d is not None:
+            sel_flat = np.asarray(sel_mask_1d).reshape(-1)
+            kept = []
+            for c in candidates:
+                idx = c.get("indices")
+                if idx is None or len(idx) == 0:
+                    continue
+                if float((sel_flat[idx] > 0).mean()) >= 0.5:
+                    kept.append(c)
+            s._log(
+                f"[Selection] Bottleneck analysis restricted to selection: "
+                f"{len(kept)}/{len(candidates)} candidates kept.",
+                "info",
+            )
+            candidates = kept
+            if not candidates:
+                s._log("[Selection] No candidates inside the selection.", "warn")
+                return
+
         def _analyse():
             try:
                 def prog(done, total, name):
@@ -4689,6 +4710,41 @@ class MainWin(QMainWindow):
 
         act = s.act_r
         candidates = list(s._sem_candidates)
+
+        # If the user has an active selection, restrict the optimisation to
+        # objects whose footprint majority sits inside that selection. The
+        # selection has already been applied to the coverage mask in
+        # run_coverage, so relocation destinations are naturally constrained
+        # to the selection (find_relocation_zones reads act["floorPx"] which
+        # is already sel-clipped). Filtering candidates here ensures the
+        # optimiser doesn't propose moves on objects the user doesn't care
+        # about for this run.
+        sel_mask_1d = s._make_sel_mask() if hasattr(s, "_make_sel_mask") else None
+        if sel_mask_1d is not None:
+            sel_flat = np.asarray(sel_mask_1d).reshape(-1)
+            n_before = len(candidates)
+            kept = []
+            for c in candidates:
+                idx = c.get("indices")
+                if idx is None or len(idx) == 0:
+                    continue
+                inside_frac = float((sel_flat[idx] > 0).mean())
+                if inside_frac >= 0.5:
+                    kept.append(c)
+            candidates = kept
+            s._log(
+                f"[Selection] Restricting optimisation to selected area: "
+                f"{len(candidates)}/{n_before} candidates inside the selection.",
+                "info",
+            )
+            if not candidates:
+                s.bsem_optimize.setEnabled(True)
+                s.optimization_status.setText(
+                    "No candidates inside the current selection. "
+                    "Clear / widen the selection and try again."
+                )
+                s._log("[Selection] No candidates inside the selection — nothing to optimise.", "warn")
+                return
 
         def _work():
             try:
