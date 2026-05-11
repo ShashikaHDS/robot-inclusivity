@@ -428,15 +428,13 @@ class MainWin(QMainWindow):
     def _coverage_mode_key(s):
         """Map the Coverage Mode combo text to the internal key used by run_coverage."""
         if not hasattr(s, "coverage_mode"):
-            return "footprint_fit"  # new safe default
+            return "inflation"
         t = s.coverage_mode.currentText()
         if t.startswith("Accurate"):
             return "footprint_fit"
         if t.startswith("Coverage"):
             return "coverage_path"
-        if t.startswith("Fast") or t.startswith("Default"):
-            return "inflation"
-        return "footprint_fit"
+        return "inflation"
 
     def _mk_browse_btn(s, tooltip, on_click):
         from PyQt5.QtWidgets import QStyle
@@ -2206,23 +2204,17 @@ class MainWin(QMainWindow):
         cov_row.addWidget(QLabel("Coverage mode:"))
         s.coverage_mode = QComboBox()
         s.coverage_mode.addItems([
-            "Accurate footprint fit  (default, recommended)",
+            "Default (obstacle inflation)",
+            "Accurate footprint fit",
             "Coverage path (zig-zag sweep)",
-            "Fast (inflation — approximate)",
         ])
-        # Accurate is the new default: physically correct, handles rotation,
-        # tight gaps, and diff/holonomic motion. Fast (inflation) is kept
-        # as a speed escape hatch only.
-        s.coverage_mode.setCurrentIndex(0)
         s.coverage_mode.setToolTip(
-            "Accurate footprint fit (default): 16-orientation rotation + diff-drive BFS,\n"
-            "    returns the swept body area. Correct for tight gaps and rotated\n"
-            "    rectangular footprints. The right choice for almost every map.\n"
+            "Default: fast, axis-aligned obstacle inflation + 4-connected BFS.\n"
+            "Accurate footprint fit: 16-orientation rotation + diff-drive BFS,\n"
+            "    returns the swept body area (cells the robot body passes over).\n"
             "Coverage path: runs the footprint fit then simulates a boustrophedon\n"
-            "    (zig-zag) sweep — the mask matches what a real sweep plan would cover.\n"
-            "Fast (inflation): axis-aligned obstacle inflation + coarse-grid BFS.\n"
-            "    Faster but approximate. May misreport coverage for gaps narrower\n"
-            "    than ~2× the robot body width."
+            "    (zig-zag) sweep over the reachable centres; the swept mask\n"
+            "    matches what a real coverage-plan execution would cover."
         )
         cov_row.addWidget(s.coverage_mode, 1)
         l5.addLayout(cov_row)
