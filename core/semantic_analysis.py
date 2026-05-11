@@ -768,14 +768,38 @@ def score_bottleneck_candidates(act_result, candidates, top_n=20, progress_cb=No
     return candidates
 
 
-def find_relocation_zones(act_result, candidate, max_zones=5):
+def find_relocation_zones(act_result, candidate, max_zones=5,
+                           label_grid=None,
+                           peer_label_id=None):
     """Find valid placement positions for a candidate object.
 
-    Uses erosion to find positions where the object's bounding box fits
-    within accessible floor, scored by wall adjacency (prefer near walls).
-    Validates top zones to ensure net area gain is positive.
+    Two-layer pipeline (replaces the old wall+traffic heuristic):
 
-    Returns list of zone dicts with: zone_id, top_left_rc, wall_score, net_area_gain.
+    **Layer A — rule-based hard filter** (deterministic):
+      1. Footprint fits in the accessible obstacle-free area (existing
+         erosion logic).
+      2. Destination doesn't overlap the current coverage path (robot's
+         own routes stay clear).
+      3. Destination doesn't touch a doorway / pinch cell — cells whose
+         free 4-neighbour count in the *raw* obstacle map is ≤ 2.
+
+    **Layer B — score the survivors** with simulated net RII gain plus
+    soft preferences:
+      score = net_gain_m2  +  α · peer_proximity  −  β · origin_distance
+      Tie-breakers in order: peer_proximity, origin_distance, wall adjacency.
+      Zones with net_gain ≤ 0 are dropped (safety from the old code).
+
+    The simulation runs over **every** zone that survives Layer A (after
+    20-cell deduplication), not just the top-K from a local heuristic.
+
+    label_grid is optional; if supplied alongside peer_label_id the peer-
+    proximity score is non-zero (objects of the same fixation type
+    attract).
+
+    Returns list of zone dicts with:
+        zone_id, top_left_rc, wall_score, net_area_gain,
+        peer_score, origin_distance_m, combined_score,
+        footprint_hw, rules_passed
     """
     w, h = int(act_result["w"]), int(act_result["h"])
     res = float(act_result.get("resolution", 0.05))
@@ -827,83 +851,164 @@ def find_relocation_zones(act_result, candidate, max_zones=5):
     if not np.any(valid):
         return []
 
-    # Wall adjacency score: count blocked neighbors (prefer near walls/corners)
+    # ── Layer A rule-based pre-filter masks ────────────────────────────
+    # Wall adjacency (kept as a soft tie-breaker, not the primary score)
     try:
-        from scipy.ndimage import convolve
-        kernel = np.ones((3, 3), dtype=np.int32)
-        kernel[1, 1] = 0
-        wall_score = convolve(source_blocked.astype(np.int32), kernel, mode='constant', cval=0).astype(np.float32)
+        from scipy.ndimage import convolve as _convolve
+        kernel = np.ones((3, 3), dtype=np.int32); kernel[1, 1] = 0
+        wall_score = _convolve(source_blocked.astype(np.int32), kernel,
+                                mode='constant', cval=0).astype(np.float32)
     except ImportError:
-        kernel_sum = np.zeros((h, w), dtype=np.int32)
-        for dr in [-1, 0, 1]:
-            for dc in [-1, 0, 1]:
+        wall_score = np.zeros((h, w), dtype=np.float32)
+        for dr in (-1, 0, 1):
+            for dc in (-1, 0, 1):
                 if dr == 0 and dc == 0:
                     continue
-                shifted = np.zeros_like(source_blocked, dtype=np.int32)
+                shifted = np.zeros_like(wall_score)
                 sr0, sr1 = max(0, -dr), min(h, h - dr)
                 sc0, sc1 = max(0, -dc), min(w, w - dc)
                 dr0, dr1 = max(0, dr), min(h, h + dr)
                 dc0, dc1 = max(0, dc), min(w, w + dc)
-                shifted[dr0:dr1, dc0:dc1] = source_blocked[sr0:sr1, sc0:sc1]
-                kernel_sum += shifted
-        wall_score = kernel_sum.astype(np.float32)
-    wall_score[valid == 0] = -1
+                shifted[dr0:dr1, dc0:dc1] = source_blocked[sr0:sr1, sc0:sc1].astype(np.float32)
+                wall_score += shifted
 
-    # Combine wall adjacency with traffic avoidance: prefer low-traffic areas
-    traffic = act_result.get("trafficHeatmap")
-    if traffic is not None:
-        traffic2d = np.asarray(traffic, dtype=np.float32).reshape(h, w)
-        t_max = max(float(traffic2d.max()), 1.0)
-        traffic_norm = traffic2d / t_max
-        # Combined: high wall adjacency + low traffic = best placement
-        placement_score = wall_score * (1.0 - 0.8 * traffic_norm)
-        placement_score[valid == 0] = -1
-    else:
-        placement_score = wall_score
+    # RULE 2 — coverage-path clearance: forbid zones whose footprint
+    # overlaps the buffer around the robot's current routes.
+    inflX, inflY, _ = _footprint_inflation_pixels(params, res)
+    robot_short_px = max(1, min(int(inflX), int(inflY)))
+    cov2d_orig = np.asarray(act_result['covPx'], dtype=np.uint8).reshape(h, w)
+    try:
+        from scipy.ndimage import binary_dilation as _bd
+        path_struct = np.ones((2 * robot_short_px + 1, 2 * robot_short_px + 1), dtype=bool)
+        path_buffer = _bd(cov2d_orig.astype(bool), structure=path_struct).astype(np.uint8)
+    except ImportError:
+        path_buffer = cov2d_orig.copy()
 
-    # Pick top zone candidates by placement score
+    # RULE 3 — doorway / pinch-point preservation. A doorway cell is a
+    # free cell with ≤ 2 free 4-neighbours in the RAW obstacle map.
+    free_raw = (source_blocked == 0).astype(np.int32)
+    nbr_free = np.zeros_like(free_raw)
+    nbr_free[1:, :] += free_raw[:-1, :]
+    nbr_free[:-1, :] += free_raw[1:, :]
+    nbr_free[:, 1:] += free_raw[:, :-1]
+    nbr_free[:, :-1] += free_raw[:, 1:]
+    doorway_cells = ((free_raw == 1) & (nbr_free <= 2)).astype(np.uint8)
+
+    # Peer-attractor map: distance to nearest cell whose label matches the
+    # candidate's fixation. Used as a tie-breaker so movable items cluster
+    # with peers instead of sitting in random corners.
+    peer_dist = None
+    if label_grid is not None and peer_label_id is not None:
+        try:
+            label2d = np.asarray(label_grid, dtype=np.int32).reshape(h, w)
+            peer_mask = (label2d == int(peer_label_id))
+            # Exclude the candidate's own cells from the peer mask
+            peer_mask[rows_obj, cols_obj] = False
+            if peer_mask.any():
+                from scipy.ndimage import distance_transform_edt as _dte
+                peer_dist = _dte(~peer_mask).astype(np.float32) * res  # in meters
+        except Exception:
+            peer_dist = None
+
+    # Object origin (centroid in pixels) for the origin-distance penalty
+    origin_r = float(rows_obj.mean())
+    origin_c = float(cols_obj.mean())
+
+    # ── Layer A: enumerate valid zones, dedupe by 20-cell Manhattan ─────
     flat_valid = np.where(valid.ravel() > 0)[0]
     if flat_valid.size == 0:
         return []
-    scores = placement_score.ravel()[flat_valid]
-    top_k = min(max_zones * 3, flat_valid.size)
-    top_idx = np.argsort(scores)[::-1][:top_k]
-    zone_candidates = flat_valid[top_idx]
 
-    # Cluster nearby candidates (within 20 cells) and keep centroids
-    zone_centroids = []
-    for fi in zone_candidates:
-        r, c = fi // w, fi % w
+    # Sort valid cells by (low path-buffer overlap, then wall_score) so
+    # the deduplication keeps zones that already look promising.
+    pb_score = -path_buffer.ravel()[flat_valid].astype(np.float32)
+    ws_score = wall_score.ravel()[flat_valid]
+    pre_score = pb_score * 1000.0 + ws_score  # lex sort
+    order = np.argsort(-pre_score)
+    valid_ordered = flat_valid[order]
+
+    zone_centroids: list[tuple[int, int]] = []
+    DEDUP_CELLS = 20
+    MAX_LAYER_A_ZONES = 80  # hard cap so BFS stays under ~5 s per object
+    for fi in valid_ordered:
+        if len(zone_centroids) >= MAX_LAYER_A_ZONES:
+            break
+        r, c = int(fi // w), int(fi % w)
+
+        # Rule 2 — coverage-path clearance
+        if path_buffer[r:r + obj_h, c:c + obj_w].any():
+            continue
+        # Rule 3 — no doorway seal
+        if doorway_cells[r:r + obj_h, c:c + obj_w].any():
+            continue
+
+        # 20-cell Manhattan deduplication
         too_close = False
         for pr, pc in zone_centroids:
-            if abs(r - pr) + abs(c - pc) < 20:
+            if abs(r - pr) + abs(c - pc) < DEDUP_CELLS:
                 too_close = True
                 break
         if too_close:
             continue
         zone_centroids.append((r, c))
-        if len(zone_centroids) >= max_zones:
-            break
 
-    # Validate each zone: place object, measure net gain
+    if not zone_centroids:
+        return []
+
+    # ── Layer B: score each surviving zone with simulated net RII ──────
+    original_accessible = int(cov2d_orig.sum())
+    ALPHA_PEER = 0.05   # m² per metre of inverse-peer-distance — gentle
+    BETA_ORIGIN = 0.02  # m² per metre of origin-distance penalty
+
     zones = []
-    original_accessible = int(np.asarray(act_result["covPx"], dtype=np.uint8).sum())
     for zone_id, (zr, zc) in enumerate(zone_centroids):
+        # Simulate placement
         place_blocked = test_blocked.copy()
         place_blocked[zr:zr + obj_h, zc:zc + obj_w] = 1
         placed_cells, _ = _quick_reachable_area(place_blocked, floor2d, params, res)
         net_gain = float(placed_cells - original_accessible) * cell_area
+        if net_gain <= 0:
+            continue  # would hurt or no-op
+
+        # Peer proximity (smaller distance is better → invert)
+        if peer_dist is not None:
+            zone_center_r = zr + obj_h // 2
+            zone_center_c = zc + obj_w // 2
+            d_peer = float(peer_dist[zone_center_r, zone_center_c])
+            peer_score_m = 1.0 / (1.0 + d_peer)  # 1.0 at peer, → 0 far away
+        else:
+            d_peer = float('inf'); peer_score_m = 0.0
+
+        # Origin-distance penalty (Euclidean, in metres)
+        d_origin = (((zr + obj_h / 2.0) - origin_r) ** 2 +
+                    ((zc + obj_w / 2.0) - origin_c) ** 2) ** 0.5 * res
+
+        combined = (net_gain
+                    + ALPHA_PEER * peer_score_m
+                    - BETA_ORIGIN * d_origin)
 
         zones.append({
             "zone_id": zone_id,
             "top_left_rc": (int(zr), int(zc)),
-            "wall_score": float(placement_score[zr, zc]),
+            "wall_score": float(wall_score[zr, zc]),
             "net_area_gain": net_gain,
+            "peer_score": peer_score_m,
+            "peer_distance_m": d_peer if peer_score_m else None,
+            "origin_distance_m": float(d_origin),
+            "combined_score": float(combined),
             "footprint_hw": (obj_h, obj_w),
+            "rules_passed": True,
         })
 
-    zones.sort(key=lambda z: -z["net_area_gain"])
-    return [z for z in zones if z["net_area_gain"] > 0][:max_zones]
+    # Rank: combined score, then peer proximity, then small origin move,
+    # then wall adjacency as final tie-breaker.
+    zones.sort(key=lambda z: (
+        -z["combined_score"],
+        -z["peer_score"],
+        z["origin_distance_m"],
+        -z["wall_score"],
+    ))
+    return zones[:max_zones]
 
 
 def classify_candidate_actions(candidates, relocation_results):
@@ -934,7 +1039,8 @@ def classify_candidate_actions(candidates, relocation_results):
     return candidates
 
 
-def optimize_multi_object_relocation(act_result, candidates, max_moves=10, progress_cb=None):
+def optimize_multi_object_relocation(act_result, candidates, max_moves=10,
+                                       progress_cb=None, label_grid=None):
     """Greedy iterative multi-object relocation.
 
     Iteratively picks the best bottleneck, relocates it, then re-evaluates
@@ -996,7 +1102,11 @@ def optimize_multi_object_relocation(act_result, candidates, max_moves=10, progr
         _, acc = _quick_reachable_area(current_blocked, floor2d, params, res)
         temp_result["covPx"] = acc.ravel().copy()
 
-        zones = find_relocation_zones(temp_result, best_cand, max_zones=1)
+        zones = find_relocation_zones(
+            temp_result, best_cand, max_zones=1,
+            label_grid=label_grid,
+            peer_label_id=best_cand.get("label"),
+        )
 
         current_blocked[rows, cols] = 0
         to_rc = None
@@ -1012,6 +1122,15 @@ def optimize_multi_object_relocation(act_result, candidates, max_moves=10, progr
         cumulative_gain += step_gain
         moved_ids.add(best_cand["id"])
 
+        kind = "relocate_object" if to_rc else "remove_object"
+        if to_rc:
+            wx = (to_rc[1] + obj_w / 2.0) * res
+            wy = (to_rc[0] + obj_h / 2.0) * res
+            description = f"Relocate {best_cand.get('name', best_cand['id'])} → ({wx:.1f}, {wy:.1f}) m"
+            if zones and zones[0].get("peer_score", 0) > 0:
+                description += "  (near peers)"
+        else:
+            description = f"Remove {best_cand.get('name', best_cand['id'])}"
         moves.append({
             "candidate_id": best_cand["id"],
             "name": best_cand.get("name", f"Object #{best_cand['id']}"),
@@ -1023,6 +1142,9 @@ def optimize_multi_object_relocation(act_result, candidates, max_moves=10, progr
             "cumulative_gain": cumulative_gain,
             "new_accessible_area": float(new_cells) * cell_area,
             "action": "Relocate" if to_rc else "Remove",
+            "kind": kind,
+            "description": description,
+            "zone_meta": (zones[0] if zones else None),
         })
 
         if progress_cb:

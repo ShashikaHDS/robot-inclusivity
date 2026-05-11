@@ -4619,8 +4619,12 @@ class MainWin(QMainWindow):
 
                 reloc = {}
                 bottlenecks = [c for c in candidates if c.get("isBottleneck")]
+                lg = getattr(s, '_label_grid', None)
                 for i, cand in enumerate(bottlenecks[:10]):
-                    zones = find_relocation_zones(act, cand)
+                    peer_id = cand.get("label")  # same-label peer attraction
+                    zones = find_relocation_zones(act, cand,
+                                                   label_grid=lg,
+                                                   peer_label_id=peer_id)
                     if zones:
                         reloc[cand["id"]] = zones
                     s.ui_log_sig.emit(
@@ -4691,7 +4695,10 @@ class MainWin(QMainWindow):
                 def prog(done, total, name):
                     s.ui_log_sig.emit(f"  Optimization step {done}/{total}: {name}", "")
 
-                result = optimize_multi_object_relocation(act, candidates, max_moves=10, progress_cb=prog)
+                result = optimize_multi_object_relocation(
+                    act, candidates, max_moves=10, progress_cb=prog,
+                    label_grid=getattr(s, '_label_grid', None),
+                )
                 n = len(result["moves"])
                 gain = result["total_gain"]
                 s.ui_log_sig.emit(f"Optimization complete: {n} moves, +{gain:.1f} m² total gain", "success")
@@ -4752,13 +4759,29 @@ class MainWin(QMainWindow):
         html += f"<p><b>Optimized accessible area:</b> {opt:.2f} m² ({opt/floor*100:.1f}% RII)</p>"
         html += f"<p><b>Total gain:</b> +{gain:.1f} m²</p>"
         html += "<hr>"
+        html += "<p style='color:#6b7280;font-size:11px'>Improvements ranked by estimated unlock area. "
+        html += "Relocations are filtered by: footprint fits · doesn't block robot path · "
+        html += "doesn't seal doorway · improves coverage; tie-broken by peer proximity then small move.</p>"
         html += "<table border='1' cellpadding='4' cellspacing='0' style='border-collapse:collapse'>"
-        html += "<tr style='background:#f0f4ff'><th>#</th><th>Object</th><th>Action</th><th>Gain</th><th>Cumulative</th></tr>"
+        html += "<tr style='background:#f0f4ff'><th>#</th><th>Kind</th><th>Description</th><th>Gain</th><th>Cumulative</th></tr>"
+        _kind_icon = {
+            "relocate_object": "🔄",
+            "remove_object": "📦",
+            "lower_ramp": "⛰️",
+            "widen_corridor": "↔️",
+            "add_access": "🚪",
+        }
         for i, m in enumerate(moves):
-            action = m["action"]
-            if m["to_rc"]:
-                action += f" to ({m['to_rc'][1]*0.05:.1f}, {m['to_rc'][0]*0.05:.1f}) m"
-            html += f"<tr><td>{i+1}</td><td>{m['name']}</td><td>{action}</td>"
+            kind = m.get("kind", "relocate_object" if m.get("to_rc") else "remove_object")
+            icon = _kind_icon.get(kind, "•")
+            description = m.get("description")
+            if not description:
+                description = m["action"]
+                if m.get("to_rc"):
+                    description += f" → ({m['to_rc'][1]*0.05:.1f}, {m['to_rc'][0]*0.05:.1f}) m"
+                description = f"{description} {m.get('name','')}"
+            html += f"<tr><td>{i+1}</td><td>{icon} {kind.replace('_',' ')}</td>"
+            html += f"<td>{description}</td>"
             html += f"<td>+{m['step_gain']:.2f} m²</td><td>+{m['cumulative_gain']:.2f} m²</td></tr>"
         html += "</table>"
 
