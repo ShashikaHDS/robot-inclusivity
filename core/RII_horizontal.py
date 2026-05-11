@@ -843,6 +843,12 @@ def run_coverage(
 
     P(f"Map: {w}x{h}, res={res}, fpt={fpt}")
     L(f"[{label}] Map: {w}x{h}, res={res}", "info")
+    _shape_str = params.get('shape', 'circular')
+    if _shape_str == 'rectangular':
+        _fp_str = f"rect W={params.get('halfW',0)*2:.2f} × L={params.get('halfL',0)*2:.2f} m"
+    else:
+        _fp_str = f"circle r={params.get('radius', params.get('halfW',0)):.2f} m"
+    L(f"[{label}] Coverage mode: {coverage_mode}  |  Footprint: {_fp_str}", "info")
 
     t0 = time.time()
     pix2d = pixels.reshape(h, w)
@@ -1099,13 +1105,16 @@ def run_coverage(
           f"free={int((blocked==0).sum())}", "info")
     L(f"[{label}] Inflation done: {time.time()-t0:.2f}s", "info")
 
-    # ── Coarse grid for coverage planner (cell size = robot body width) ──
-    # The robot body sweeps one coarse cell per step — this is physically correct:
-    # visiting a coarse cell = the robot body covers that entire tile.
-    # Minimum step of 4 pixels (0.20m at 0.05m/cell) to keep the coarse grid
-    # manageable on large maps.
+    # ── Coarse grid for coverage planner (cell size ≈ robot body HALF) ──
+    # Cell size used to be 2*bodyHalf (full body width). That made the
+    # planner miss gaps that weren't aligned to a 1-body-width grid: a
+    # 1.5 m gap with a 1 m robot landed as one isolated free coarse cell
+    # straddled by blocked neighbours, so BFS couldn't enter.
+    # Halving the cell to a half-overlap grid removes the alignment
+    # lottery; gaps wider than ~1.5 × robot body always show a chain of
+    # free coarse cells regardless of where the gap falls.
     bodyHalf = min(halfW, halfL)
-    stepM = 2.0 * bodyHalf
+    stepM = bodyHalf           # was 2.0 * bodyHalf
     MIN_STEP = 4  # minimum coarse cell size in pixels
     step = max(MIN_STEP, round(stepM / res))
     cw = math.ceil(w / step)
