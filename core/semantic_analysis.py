@@ -966,13 +966,17 @@ def find_relocation_zones(act_result, candidate, max_zones=5,
 
     # ── Layer B: score each surviving zone with simulated net RII ──────
     original_accessible = int(cov2d_orig.sum())
-    ALPHA_PEER = 0.05   # m² per metre of inverse-peer-distance — gentle
-    BETA_ORIGIN = 0.02  # m² per metre of origin-distance penalty
+    ALPHA_PEER = 0.05     # m² per peer score — gentle
+    BETA_ORIGIN = 0.25    # m² per metre of origin distance — STRONG penalty
+                          # so a 10 m corner is heavily disfavoured vs a 1 m nudge
+    MAX_DISPLACEMENT_M = 8.0  # hard cap — never propose moves farther than this
 
     zones = []
-    # At max relaxation, accept any zone whose net_gain isn't worse than
-    # leaving the object in place (so we always have *something* to suggest).
-    min_acceptable_gain = 0.0 if relaxation_level < 3 else -float('inf')
+    # Always require strictly positive net_gain. If no relaxation level
+    # produces a valid zone, the optimiser will skip the candidate
+    # rather than emit a harmful move. "Always relocate" never means
+    # "relocate to somewhere worse".
+    min_acceptable_gain = 0.0
     for zone_id, (zr, zc) in enumerate(zone_centroids):
         # Simulate placement
         place_blocked = test_blocked.copy()
@@ -994,6 +998,10 @@ def find_relocation_zones(act_result, candidate, max_zones=5,
         # Origin-distance penalty (Euclidean, in metres)
         d_origin = (((zr + obj_h / 2.0) - origin_r) ** 2 +
                     ((zc + obj_w / 2.0) - origin_c) ** 2) ** 0.5 * res
+
+        # Hard cap on physical move distance — no "shove to far corner" moves.
+        if d_origin > MAX_DISPLACEMENT_M:
+            continue
 
         combined = (net_gain
                     + ALPHA_PEER * peer_score_m
@@ -1115,9 +1123,10 @@ def optimize_multi_object_relocation(act_result, candidates, max_moves=10,
         _, acc = _quick_reachable_area(current_blocked, floor2d, params, res)
         temp_result["covPx"] = acc.ravel().copy()
 
-        # Try strict rules first, relax progressively until we find SOMEWHERE
-        # to put the object. We never fall back to "Remove" — the user
-        # explicitly wants every move to be a relocation.
+        # Try strict rules first, relax progressively. Every level
+        # requires net_gain > 0 (always-positive guarantee), so if no
+        # level finds a valid zone within MAX_DISPLACEMENT, we SKIP this
+        # candidate — we don't emit a harmful or degenerate move.
         zones = []
         used_relax = 0
         for relax in (0, 1, 2, 3):
@@ -1131,13 +1140,19 @@ def optimize_multi_object_relocation(act_result, candidates, max_moves=10,
                 used_relax = relax
                 break
 
+        if not zones:
+            # No accessibility-positive, within-cap relocation exists.
+            # Mark this candidate as tried and move on — DO NOT emit a
+            # negative-gain move.
+            moved_ids.add(best_cand["id"])
+            continue
+
+        # Apply the chosen move on the working obstacle map.
         current_blocked[rows, cols] = 0
-        to_rc = None
-        if zones:
-            zr, zc = zones[0]["top_left_rc"]
-            fh, fw = zones[0]["footprint_hw"]
-            current_blocked[zr:zr + fh, zc:zc + fw] = 1
-            to_rc = (int(zr), int(zc))
+        zr, zc = zones[0]["top_left_rc"]
+        fh, fw = zones[0]["footprint_hw"]
+        current_blocked[zr:zr + fh, zc:zc + fw] = 1
+        to_rc = (int(zr), int(zc))
 
         new_cells, _ = _quick_reachable_area(current_blocked, floor2d, params, res)
         step_gain = float(new_cells - baseline_cells) * cell_area
@@ -1147,22 +1162,22 @@ def optimize_multi_object_relocation(act_result, candidates, max_moves=10,
 
         kind = "relocate_object"
         name = best_cand.get('name', best_cand['id'])
-        if to_rc:
-            wx = (to_rc[1] + obj_w / 2.0) * res
-            wy = (to_rc[0] + obj_h / 2.0) * res
-            description = f"Relocate {name} → ({wx:.1f}, {wy:.1f}) m"
-            if used_relax == 0 and zones and zones[0].get("peer_score", 0) > 0:
-                description += "  (near peers)"
-            elif used_relax == 1:
-                description += "  (near a doorway — pick an alternative if possible)"
-            elif used_relax == 2:
-                description += "  (close to a robot route — keep clear when moving)"
-            elif used_relax == 3:
-                description += "  (best-fit only — verify accessibility on site)"
-        else:
-            # Should never trigger now that we always pursue a relocation,
-            # but keep a graceful "manual relocate" label as a safety net.
-            description = f"Relocate {name} — no auto-suggested slot, pick any free spot"
+        # we always have a valid to_rc here (the no-zone case `continue`s above)
+        wx = (to_rc[1] + obj_w / 2.0) * res
+        wy = (to_rc[0] + obj_h / 2.0) * res
+        d_origin_m = zones[0].get("origin_distance_m", 0.0)
+        description = (
+            f"Relocate {name} → ({wx:.1f}, {wy:.1f}) m  "
+            f"[move {d_origin_m:.1f} m]"
+        )
+        if used_relax == 0 and zones[0].get("peer_score", 0) > 0:
+            description += "  (near peers)"
+        elif used_relax == 1:
+            description += "  (near a doorway — pick an alternative if possible)"
+        elif used_relax == 2:
+            description += "  (close to a robot route — keep clear when moving)"
+        elif used_relax == 3:
+            description += "  (best-fit only — verify accessibility on site)"
         moves.append({
             "candidate_id": best_cand["id"],
             "name": name,
@@ -1183,10 +1198,14 @@ def optimize_multi_object_relocation(act_result, candidates, max_moves=10,
         if progress_cb:
             progress_cb(step_i + 1, max_moves, best_cand.get("name", ""))
 
+    # Final numbers are computed by _quick_reachable_area on the modified
+    # blocked mask — same dilation + largest-component logic the
+    # reference / actual runs use under the hood, so before/after are
+    # directly comparable.
     return {
         "moves": moves,
         "original_accessible_area": float(original_cells) * cell_area,
         "optimized_accessible_area": float(baseline_cells) * cell_area,
-        "total_gain": cumulative_gain,
+        "total_gain": float(baseline_cells - original_cells) * cell_area,
         "optimized_blocked": current_blocked.copy(),
     }
