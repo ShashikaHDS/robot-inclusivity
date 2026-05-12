@@ -2476,7 +2476,7 @@ class MainWin(QMainWindow):
         sem_btn_grid.addWidget(s.bsem_clear_candidates, 2, 1)
         l6.addLayout(sem_btn_grid)
 
-        s.bsem_recompute = QPushButton("Recompute Optimised RII")
+        s.bsem_recompute = QPushButton("Recompute Optimised RII (relocate selected)")
         s.bsem_recompute.setStyleSheet(s._B())
         s.bsem_recompute.clicked.connect(s._recompute_semantic_improvement)
         s.bsem_recompute.setEnabled(False)
@@ -4567,7 +4567,7 @@ class MainWin(QMainWindow):
             QMessageBox.warning(s, "Error", "Select one or more removable-object candidates first.")
             return
         s.bsem_recompute.setEnabled(False)
-        s._log("Recomputing improved RII Horizontal from selected semantic removals...", "info")
+        s._log("Recomputing improved RII Horizontal — relocating selected objects to rule-safe zones…", "info")
         token = s._sem_session_token
 
         def _recompute():
@@ -4578,6 +4578,7 @@ class MainWin(QMainWindow):
                     selected_ids,
                     label="IMPROVED",
                     logf=lambda m, c: s.ui_log_sig.emit(m, c),
+                    label_grid=getattr(s, '_label_grid', None),
                 )
                 if token == s._sem_session_token:
                     s.sem_improved_sig.emit(token, improved)

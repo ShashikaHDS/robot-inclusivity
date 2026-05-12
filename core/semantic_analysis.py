@@ -592,43 +592,136 @@ def identify_semantic_removal_candidates(
     return candidates[:max_candidates]
 
 
-def simulate_removed_candidates(act_result, candidate_list, selected_ids, label="IMPROVED", logf=None):
-    """Recompute horizontal RII after clearing the selected removable semantic components."""
+def simulate_removed_candidates(act_result, candidate_list, selected_ids,
+                                  label="IMPROVED", logf=None,
+                                  label_grid=None):
+    """Recompute horizontal RII after intelligently RELOCATING the
+    selected semantic components.
+
+    Behaviour change: this used to literally remove the objects (zero
+    their cells) and score the resulting map. That treated every
+    suggestion as "delete the chair", which doesn't match how a real
+    layout improvement works. The function now RELOCATES each selected
+    object using the same rule-based + simulated-net-gain pipeline that
+    Optimize Layout uses (find_relocation_zones with progressive
+    relaxation), and scores the resulting map with the same
+    _score_accessibility_from_masks routine used by the Reference and
+    Actual coverage runs — so the headline RII is directly comparable
+    with the Step 3 numbers.
+
+    Result dict carries `relocations` (list of placement records) and
+    still includes `removedCells`/`removedArea` (both zero) for callers
+    that read the legacy fields.
+    """
+    L = logf if logf else (lambda m, c="": None)
     selected = {int(v) for v in selected_ids}
     if not selected:
         raise ValueError("No removable objects were selected")
 
     w, h = int(act_result["w"]), int(act_result["h"])
-    source_blocked = np.asarray(act_result.get("sourceBlocked", act_result["blocked"]), dtype=np.uint8).copy()
-    remove_mask = np.zeros_like(source_blocked, dtype=np.uint8)
-    picked = []
-    for candidate in candidate_list:
-        if int(candidate["id"]) not in selected:
-            continue
-        remove_mask[candidate["indices"]] = 1
-        picked.append(candidate)
+    res = float(act_result["resolution"])
+    cell_area = res * res
+    params = dict(act_result.get("params", {}))
+    floor_mask = np.asarray(act_result.get("floorPx"), dtype=np.uint8).reshape(h, w)
+
+    working_blocked = np.asarray(
+        act_result.get("sourceBlocked", act_result["blocked"]),
+        dtype=np.uint8,
+    ).reshape(h, w).copy()
+
+    picked = [c for c in candidate_list if int(c["id"]) in selected]
     if not picked:
         raise ValueError("Selected removable objects are no longer available")
 
-    source_blocked[remove_mask == 1] = 0
-    floor_mask = np.asarray(act_result.get("floorPx"), dtype=np.uint8).reshape(h, w)
+    # Process biggest unlock-potential first so dependencies between moves
+    # are captured greedily (same idea as optimize_multi_object_relocation).
+    picked.sort(key=lambda c: -float(c.get("potentialUnlockArea", c.get("area", 0))))
+
+    placements: list[dict] = []
+    skipped: list[dict] = []
+
+    for candidate in picked:
+        flat = candidate["indices"]
+        rows = flat // w
+        cols = flat % w
+        if working_blocked[rows, cols].sum() == 0:
+            # Already cleared by a previous move (overlap edge case).
+            continue
+
+        # Build a temp result reflecting the current working state so
+        # find_relocation_zones sees the right baseline.
+        temp_result = dict(act_result)
+        temp_result["sourceBlocked"] = working_blocked.ravel().copy()
+        temp_result["blocked"] = working_blocked.ravel().copy()
+        _, acc = _quick_reachable_area(working_blocked, floor_mask, params, res)
+        temp_result["covPx"] = acc.ravel().copy()
+
+        zones = []
+        used_relax = 0
+        for relax in (0, 1, 2, 3):
+            zones = find_relocation_zones(
+                temp_result, candidate, max_zones=3,
+                label_grid=label_grid,
+                peer_label_id=candidate.get("label"),
+                relaxation_level=relax,
+            )
+            if zones:
+                used_relax = relax
+                break
+
+        if not zones:
+            skipped.append({
+                "candidate_id": int(candidate["id"]),
+                "name": candidate.get("name", f"Object #{candidate['id']}"),
+                "reason": "no rule-safe, accessibility-positive zone",
+            })
+            L(f"[{label}] Skip {candidate.get('name', candidate['id'])} — no safe relocation slot.", "warn")
+            continue
+
+        # Apply: remove origin cells, stamp destination
+        working_blocked[rows, cols] = 0
+        zr, zc = zones[0]["top_left_rc"]
+        fh, fw = zones[0]["footprint_hw"]
+        working_blocked[zr:zr + fh, zc:zc + fw] = 1
+
+        placements.append({
+            "candidate_id": int(candidate["id"]),
+            "name": candidate.get("name", f"Object #{candidate['id']}"),
+            "to_rc": (int(zr), int(zc)),
+            "footprint_hw": (int(fh), int(fw)),
+            "relaxation_level": int(used_relax),
+            "net_area_gain": float(zones[0].get("net_area_gain", 0.0)),
+            "origin_distance_m": float(zones[0].get("origin_distance_m", 0.0)),
+            "peer_score": float(zones[0].get("peer_score", 0.0)),
+        })
+        L(
+            f"[{label}] Relocate {candidate.get('name', candidate['id'])} → ({zr}, {zc})  "
+            f"(relax={used_relax}, +{zones[0].get('net_area_gain', 0):.2f} m²)",
+            "info",
+        )
+
+    # Final RII via the SAME pipeline used by Reference / Actual coverage
+    # runs — so this matches Step 3's RII numbers directly.
     improved = _score_accessibility_from_masks(
-        source_blocked.reshape(h, w),
+        working_blocked,
         floor_mask,
-        float(act_result["resolution"]),
-        dict(act_result.get("params", {})),
+        res,
+        params,
         label,
         logf,
         use_stc=bool(act_result.get("useSTC")),
     )
     improved.update(
-        sourceBlocked=source_blocked.copy(),
-        params=dict(act_result.get("params", {})),
-        resolution=float(act_result["resolution"]),
+        sourceBlocked=working_blocked.ravel().copy(),
+        params=params,
+        resolution=res,
         origin=tuple(act_result.get("origin", (0.0, 0.0))),
         selectedCandidateIds=sorted(selected),
-        removedCells=int(remove_mask.sum()),
-        removedArea=float(remove_mask.sum()) * float(act_result["resolution"]) * float(act_result["resolution"]),
+        relocations=placements,
+        skippedCandidates=skipped,
+        # Legacy fields — kept zero so old callers don't break.
+        removedCells=0,
+        removedArea=0.0,
     )
     return improved
 
