@@ -4751,9 +4751,19 @@ class MainWin(QMainWindow):
                 def prog(done, total, name):
                     s.ui_log_sig.emit(f"  Optimization step {done}/{total}: {name}", "")
 
+                # Load yaml for narrow-gap world-coord origin
+                _yaml_data = None
+                try:
+                    if s.e_yaml.text() and os.path.isfile(s.e_yaml.text()):
+                        from core.map_io import parse_yaml as _py
+                        _yaml_data = _py(s.e_yaml.text())
+                except Exception:
+                    _yaml_data = None
+
                 result = optimize_multi_object_relocation(
                     act, candidates, max_moves=10, progress_cb=prog,
                     label_grid=getattr(s, '_label_grid', None),
+                    yaml_data=_yaml_data,
                 )
                 n = len(result["moves"])
                 gain = result["total_gain"]

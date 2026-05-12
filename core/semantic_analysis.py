@@ -1061,7 +1061,8 @@ def classify_candidate_actions(candidates, relocation_results):
 
 
 def optimize_multi_object_relocation(act_result, candidates, max_moves=10,
-                                       progress_cb=None, label_grid=None):
+                                       progress_cb=None, label_grid=None,
+                                       yaml_data=None):
     """Greedy iterative multi-object relocation.
 
     Iteratively picks the best bottleneck, relocates it, then re-evaluates
@@ -1090,10 +1091,19 @@ def optimize_multi_object_relocation(act_result, candidates, max_moves=10,
     moves = []
     cumulative_gain = 0.0
 
+    # Pre-compute narrow-gap (widen-corridor) candidates once. They compete
+    # head-to-head with object-relocation candidates inside the greedy loop.
+    try:
+        from core.corridor_diagnosis import find_narrow_gaps
+        narrow_gaps = find_narrow_gaps(act_result, yaml_data=yaml_data)
+    except Exception:
+        narrow_gaps = []
+    used_gap_ids: set[int] = set()
+
     for step_i in range(max_moves):
+        # ── 1. Best OBJECT candidate (gain if vacated) ──────────────────
         best_cand = None
         best_gain_cells = 0
-
         for cand in candidates:
             if cand.get("fixation") == "Fixed" or cand["id"] in moved_ids:
                 continue
@@ -1108,6 +1118,58 @@ def optimize_multi_object_relocation(act_result, candidates, max_moves=10,
             if gain > best_gain_cells:
                 best_cand = cand
                 best_gain_cells = gain
+
+        # ── 2. Best CORRIDOR widening candidate (re-scored against current map)
+        best_gap = None
+        best_gap_gain_cells = 0
+        for gap in narrow_gaps:
+            if gap.id in used_gap_ids:
+                continue
+            # Skip if any trim cell isn't blocked any more (a previous move
+            # already cleared the obstacle).
+            tr = gap.trim_cells[:, 0]; tc = gap.trim_cells[:, 1]
+            if current_blocked[tr, tc].sum() == 0:
+                continue
+            test = current_blocked.copy()
+            test[tr, tc] = 0
+            new_cells, _ = _quick_reachable_area(test, floor2d, params, res)
+            gain = new_cells - baseline_cells
+            if gain > best_gap_gain_cells:
+                best_gap = gap
+                best_gap_gain_cells = gain
+
+        # ── 3. Pick the better of the two ───────────────────────────────
+        if best_gap is not None and best_gap_gain_cells > best_gain_cells:
+            # Apply corridor widening
+            tr = best_gap.trim_cells[:, 0]; tc = best_gap.trim_cells[:, 1]
+            current_blocked[tr, tc] = 0
+            new_cells, _ = _quick_reachable_area(current_blocked, floor2d, params, res)
+            step_gain = float(new_cells - baseline_cells) * cell_area
+            baseline_cells = new_cells
+            cumulative_gain += step_gain
+            used_gap_ids.add(best_gap.id)
+            moves.append({
+                "candidate_id": -1 - best_gap.id,  # negative ids = non-object
+                "name": f"Corridor at {best_gap.throat_world}",
+                "fixation": "Structural",
+                "from_indices": np.array([], dtype=np.int64),
+                "to_rc": (int(best_gap.throat_rc[0]), int(best_gap.throat_rc[1])),
+                "footprint_hw": (1, 1),
+                "step_gain": step_gain,
+                "cumulative_gain": cumulative_gain,
+                "new_accessible_area": float(new_cells) * cell_area,
+                "action": "Widen corridor",
+                "kind": "widen_corridor",
+                "description": best_gap.description,
+                "zone_meta": None,
+                "trim_cells": best_gap.trim_cells.copy(),
+                "current_width_m": best_gap.current_width_m,
+                "required_width_m": best_gap.required_width_m,
+                "throat_world": best_gap.throat_world,
+            })
+            if progress_cb:
+                progress_cb(step_i + 1, max_moves, f"widen corridor #{best_gap.id}")
+            continue
 
         if best_cand is None or best_gain_cells <= 0:
             break
