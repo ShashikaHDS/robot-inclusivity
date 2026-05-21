@@ -18,6 +18,60 @@ python3 rii_pipeline.py
 A ROS 2 installation (Jazzy, Humble, Iron, or Rolling) is required for the
 map-generation shell workers.
 
+## Cloning just this subdirectory
+
+The RII Pipeline lives inside the larger Teal Robot ROS 2 workspace
+(`https://github.com/ShashikaHDS/Teal-Robot.git`). To pull only the
+`src/pcd_package/rii_pipeline/` subtree without the rest of the workspace,
+use one of the recipes below. The shareable branch is **`rii-v3`**.
+
+### Option 1 — Sparse checkout (keeps git history)
+
+```bash
+git clone --no-checkout --filter=blob:none -b rii-v3 \
+  https://github.com/ShashikaHDS/Teal-Robot.git
+cd Teal-Robot
+git sparse-checkout init --cone
+git sparse-checkout set src/pcd_package/rii_pipeline
+git checkout
+
+cd src/pcd_package/rii_pipeline
+./bootstrap.sh
+./launch.sh
+```
+
+Updates later via `git pull`.
+
+### Option 2 — Snapshot tarball (flat folder, no git)
+
+```bash
+git clone --no-checkout --depth=1 -b rii-v3 \
+  https://github.com/ShashikaHDS/Teal-Robot.git tmp
+cd tmp
+git archive rii-v3 src/pcd_package/rii_pipeline | tar -xf -
+mv src/pcd_package/rii_pipeline ../rii_pipeline
+cd .. && rm -rf tmp
+
+cd rii_pipeline
+./bootstrap.sh
+./launch.sh
+```
+
+### Option 3 — Subtree split into a standalone repo (maintainer only)
+
+Run once on a full Teal Robot clone to publish a flat RII-only repo with
+`rii_pipeline.py`, `core/`, `gui/` at the root:
+
+```bash
+cd /path/to/teal_ws
+git subtree split --prefix=src/pcd_package/rii_pipeline -b rii-v3-flat
+gh repo create rii-pipeline --public --source=. --remote=rii-only
+git push rii-only rii-v3-flat:main
+```
+
+Refresh on subsequent releases by rerunning `git subtree split` and
+re-pushing `rii-v3-flat`.
+
 ## Project Structure
 
 ```
