@@ -23,7 +23,7 @@ from PyQt5.QtWidgets import (
     QDoubleSpinBox, QSpinBox,
     QProgressBar, QTextEdit,
     QCheckBox, QListWidget, QListWidgetItem,
-    QFileDialog, QMessageBox, QSizePolicy,
+    QFileDialog, QMessageBox, QSizePolicy, QDialog,
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QRect, QSettings
 from PyQt5.QtGui import QImage, QColor, QIcon, QKeySequence
@@ -679,6 +679,154 @@ class MainWin(QMainWindow):
             dst += ".pcd"
         shutil.copy2(src, dst)
         s._log(f"Saved filtered PCD: {dst}", "success")
+
+    def _merge_two_maps(s):
+        """Pick two Nav2 PGM+YAML pairs, open interactive merge editor."""
+        from gui.map_merge_dialog import MapMergeDialog
+
+        start_dir = os.path.dirname(s.e_pgm.text()) if (hasattr(s, "e_pgm") and s.e_pgm.text()) else WORKSPACE
+
+        pgm_a, _ = QFileDialog.getOpenFileName(s, "Map A — pick PGM", start_dir, "PGM (*.pgm)")
+        if not pgm_a:
+            return
+        yaml_a = os.path.splitext(pgm_a)[0] + ".yaml"
+        if not os.path.isfile(yaml_a):
+            yaml_a, _ = QFileDialog.getOpenFileName(
+                s, "Map A — pick YAML (matching " + os.path.basename(pgm_a) + ")",
+                os.path.dirname(pgm_a), "YAML (*.yaml *.yml)"
+            )
+            if not yaml_a:
+                return
+
+        pgm_b, _ = QFileDialog.getOpenFileName(s, "Map B — pick PGM", os.path.dirname(pgm_a), "PGM (*.pgm)")
+        if not pgm_b:
+            return
+        yaml_b = os.path.splitext(pgm_b)[0] + ".yaml"
+        if not os.path.isfile(yaml_b):
+            yaml_b, _ = QFileDialog.getOpenFileName(
+                s, "Map B — pick YAML (matching " + os.path.basename(pgm_b) + ")",
+                os.path.dirname(pgm_b), "YAML (*.yaml *.yml)"
+            )
+            if not yaml_b:
+                return
+
+        dlg = MapMergeDialog(s, pgm_a, yaml_a, pgm_b, yaml_b)
+        if dlg.exec_() != QDialog.Accepted:
+            return
+        out_pgm, out_yaml = dlg.output_paths()
+        if not out_pgm:
+            return
+
+        s._log(f"[Merge] wrote {os.path.basename(out_pgm)}", "success")
+
+        reply = QMessageBox.question(
+            s, "Load merged map?",
+            "Merged map written:\n" + out_pgm + "\n\nLoad it into Step 2 now?",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes,
+        )
+        if reply == QMessageBox.Yes and hasattr(s, "e_pgm"):
+            s.e_pgm.setText(out_pgm)
+            s.e_yaml.setText(out_yaml)
+            s._load_map(out_pgm)
+
+    def _export_validation_bundle(s):
+        """Write Nav2-style PGM+YAML for the obstacle map / coverage layers,
+        plus a validation_summary.yaml so a third party can re-derive areas
+        from raw pixel counts."""
+        from core.map_export import export_validation_bundle
+
+        ref_r = getattr(s, "ref_r", None)
+        act_r = getattr(s, "act_r", None)
+        # The obstacle layer needs sourceBlocked + floorPx, present on either result.
+        src_for_obstacle = act_r if act_r else ref_r
+
+        if not (src_for_obstacle or ref_r or act_r):
+            QMessageBox.warning(
+                s, "Nothing to export",
+                "Run Step 3 (Reference and/or Actual) at least once before exporting."
+            )
+            return
+
+        # ── Layer pick dialog ──────────────────────────────────────
+        from PyQt5.QtWidgets import QCheckBox, QDialogButtonBox
+        dlg = QDialog(s)
+        dlg.setWindowTitle("Export Maps for Validation")
+        dl = QVBoxLayout(dlg)
+        dl.addWidget(QLabel("Choose which layers to export. Each will be a\n"
+                             "Nav2-style .pgm + .yaml, opened directly in\n"
+                             "Photoshop / GIMP / ImageJ."))
+        cb_obs = QCheckBox("Obstacle map (raw blocked + free floor)")
+        cb_ref = QCheckBox("Reference robot coverage")
+        cb_act = QCheckBox("Actual robot coverage")
+        cb_obs.setEnabled(src_for_obstacle is not None)
+        cb_ref.setEnabled(ref_r is not None)
+        cb_act.setEnabled(act_r is not None)
+        cb_obs.setChecked(src_for_obstacle is not None)
+        cb_ref.setChecked(ref_r is not None)
+        cb_act.setChecked(act_r is not None)
+        for w in (cb_obs, cb_ref, cb_act):
+            dl.addWidget(w)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject)
+        dl.addWidget(bb)
+        if dlg.exec_() != QDialog.Accepted:
+            return
+
+        layers = set()
+        if cb_obs.isChecked(): layers.add("obstacle")
+        if cb_ref.isChecked(): layers.add("ref_coverage")
+        if cb_act.isChecked(): layers.add("act_coverage")
+        if not layers:
+            return
+
+        # ── Output folder ──────────────────────────────────────────
+        start_dir = os.path.dirname(s.e_pgm.text()) if (hasattr(s, "e_pgm") and s.e_pgm.text()) else WORKSPACE
+        out_dir = QFileDialog.getExistingDirectory(s, "Export folder", start_dir)
+        if not out_dir:
+            return
+
+        # ── Yaml fallback (for origin / resolution stamp) ──────────
+        yaml_data = None
+        try:
+            if hasattr(s, "e_yaml") and s.e_yaml.text():
+                yaml_data = parse_yaml(s.e_yaml.text())
+        except Exception:  # noqa: BLE001
+            yaml_data = None
+
+        try:
+            result = export_validation_bundle(
+                out_dir,
+                source_result=src_for_obstacle if "obstacle" in layers else None,
+                ref_result=ref_r if "ref_coverage" in layers else None,
+                act_result=act_r if "act_coverage" in layers else None,
+                yaml_data=yaml_data,
+                source_pgm_path=s.e_pgm.text() if hasattr(s, "e_pgm") else None,
+                bg_pgm=getattr(s, "_pgm_pixels", None),
+                layers=layers,
+            )
+        except Exception as e:  # noqa: BLE001
+            QMessageBox.critical(s, "Export failed", str(e))
+            s._log(f"[Export] failed: {e}", "error")
+            return
+
+        lines = [f"<b>{len(result['layers'])} layer(s) written to:</b><br>{out_dir}<br><br>"]
+        for key, info in result["layers"].items():
+            covered_key = next(iter(info["areas_m2"]))
+            covered_area = info["areas_m2"][covered_key]
+            lines.append(
+                f"• <b>{key}.png</b>: {info['width']}×{info['height']} @ "
+                f"{info['resolution']:.3f} m/px — "
+                f"{covered_key} = {covered_area:.2f} m²"
+            )
+        lines.append(
+            "<br>See <code>README.md</code> in the export folder for the colour "
+            "legend and step-by-step validation instructions (Photoshop / GIMP / Python)."
+        )
+        s._log(
+            f"[Export] {len(result['layers'])} layer(s) → {out_dir}",
+            "success",
+        )
+        QMessageBox.information(s, "Export complete", "<br>".join(lines))
 
     def _save_map_bundle(s):
         # Prefer the currently-loaded map (handles multi-floor map_levelN.pgm,
@@ -1497,6 +1645,14 @@ class MainWin(QMainWindow):
         a_quit = QAction(st.standardIcon(QStyle.SP_DialogCloseButton), "&Quit", s)
         a_quit.setShortcut(QKeySequence.Quit)
         a_quit.triggered.connect(s.close); m.addAction(a_quit)
+
+        # ── Tools menu ───────────────────────────────────────────────────
+        t = mb.addMenu("&Tools")
+        a_merge = QAction(st.standardIcon(QStyle.SP_FileDialogNewFolder), "&Merge Two 2D Maps…", s)
+        a_merge.triggered.connect(s._merge_two_maps); t.addAction(a_merge)
+        a_export = QAction(st.standardIcon(QStyle.SP_DialogSaveButton),
+                           "&Export Maps for Validation…", s)
+        a_export.triggered.connect(s._export_validation_bundle); t.addAction(a_export)
 
         # ── Help menu ────────────────────────────────────────────────────
         h = mb.addMenu("&Help")
