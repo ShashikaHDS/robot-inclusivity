@@ -23,9 +23,13 @@ from PyQt5.QtGui import QImage
 from core.rendering import render_coverage_fast, render_compare_fast
 
 
-# Colours match core/rendering.py — keep these in sync.
-COLOUR_COVERED = (0, 200, 130)      # green   — covered (Reference, Actual, or Actual in compare)
-COLOUR_REF_ONLY = (255, 165, 0)     # orange  — Reference-only in compare.png
+# Colours match the GUI tabs in gui/main_window.py and core/rendering.py.
+# Reference uses orange; Actual uses green. Keep these in sync if the GUI
+# palette ever changes.
+COLOUR_REF = (255, 165, 0)          # orange  — Reference Coverage tab
+COLOUR_ACT = (0, 229, 160)          # green   — Actual Coverage tab
+COLOUR_COMPARE_ACT = (0, 200, 130)  # green   — Actual side of the compare view
+COLOUR_REF_ONLY = (255, 165, 0)     # orange  — Reference-only side of compare
 COLOUR_FREE_FLOOR = (236, 240, 245) # light   — uncovered free floor (synthetic bg)
 COLOUR_BLOCKED = (25, 25, 30)       # dark    — wall / blocked
 
@@ -196,18 +200,24 @@ def _write_readme(path, written, source_pgm_path, yaml_data, generated_at):
     md += [
         "## Colour legend",
         "",
-        "| Swatch | RGB | Meaning |",
-        "| --- | --- | --- |",
-        f"| green | `({COLOUR_COVERED[0]}, {COLOUR_COVERED[1]}, {COLOUR_COVERED[2]})` "
-        "| **Covered** by the robot (Reference, Actual, or Actual side of `compare.png`) |",
-        f"| orange | `({COLOUR_REF_ONLY[0]}, {COLOUR_REF_ONLY[1]}, {COLOUR_REF_ONLY[2]})` "
-        "| **Reference-only** coverage (appears only in `compare.png`) |",
-        "| light grey | source PGM grayscale | Free, mapped floor |",
-        f"| dark | `({COLOUR_BLOCKED[0]}, {COLOUR_BLOCKED[1]}, {COLOUR_BLOCKED[2]})` "
+        "Each layer uses the same colour the matching GUI tab does:",
+        "",
+        "| File | Overlay colour | RGB | Meaning |",
+        "| --- | --- | --- | --- |",
+        f"| `ref_coverage.png` | orange | `({COLOUR_REF[0]}, {COLOUR_REF[1]}, {COLOUR_REF[2]})` "
+        "| Cells **Reference** robot reaches |",
+        f"| `act_coverage.png` | green | `({COLOUR_ACT[0]}, {COLOUR_ACT[1]}, {COLOUR_ACT[2]})` "
+        "| Cells **Actual** robot reaches |",
+        f"| `compare.png` | green | `({COLOUR_COMPARE_ACT[0]}, {COLOUR_COMPARE_ACT[1]}, {COLOUR_COMPARE_ACT[2]})` "
+        "| Actual side of the compare view |",
+        f"| `compare.png` | orange | `({COLOUR_REF_ONLY[0]}, {COLOUR_REF_ONLY[1]}, {COLOUR_REF_ONLY[2]})` "
+        "| Reference-only cells (the inclusion gap) |",
+        "| (any) | light grey | source PGM grayscale | Free, mapped floor |",
+        f"| (any) | dark | `({COLOUR_BLOCKED[0]}, {COLOUR_BLOCKED[1]}, {COLOUR_BLOCKED[2]})` "
         "| Walls / blocked / unmapped |",
         "",
-        "When the background PGM is present, the green / orange overlay is **blended at 45%**",
-        "with the underlying grayscale, so pixels are not exactly `(0, 200, 130)` everywhere —",
+        "When the background PGM is present, the coloured overlay is **blended at 45%**",
+        "with the underlying grayscale, so pixels are not exactly the listed RGB everywhere —",
         "see the *Independent validation* section below for how to count them robustly.",
         "",
     ]
@@ -228,25 +238,31 @@ def _write_readme(path, written, source_pgm_path, yaml_data, generated_at):
         "3. **Windows → Dockable Dialogs → Histogram**. Read the **Pixels** count.",
         f"4. Multiply by `{px_area:.6f}` to get m².",
         "",
-        "### Python + Pillow (most accurate — exact RGB match)",
+        "### Python + Pillow (most accurate — robust to the 45% blend)",
+        "",
+        "Each overlay is blended at 45% with the grayscale background, so the exact RGB",
+        "varies by pixel. The robust rule is *which channel dominates*:",
         "",
         "```python",
         "import numpy as np",
         "from PIL import Image",
         "",
-        f'arr = np.array(Image.open("act_coverage.png"))',
-        "# A pixel is \"covered\" if green dominates and the colour is in the act-coverage palette",
-        "# (45% blend of (0,200,130) with a grey background → green channel always >= 90 and",
-        "#  greater than red channel by a healthy margin):",
-        "covered = (arr[..., 1] > arr[..., 0] + 25) & (arr[..., 1] > arr[..., 2])",
-        f"covered_m2 = int(covered.sum()) * {px_area:.6f}",
-        'print("Covered area:", round(covered_m2, 2), "m²")',
+        "# Actual coverage (green overlay) — green channel beats both red and blue.",
+        'arr = np.array(Image.open("act_coverage.png"))',
+        "covered_act = (arr[..., 1] > arr[..., 0] + 20) & (arr[..., 1] > arr[..., 2] + 20)",
+        f'print("Actual covered:", round(int(covered_act.sum()) * {px_area:.6f}, 2), "m²")',
+        "",
+        "# Reference coverage (orange overlay) — red >> blue, green between them.",
+        'arr = np.array(Image.open("ref_coverage.png"))',
+        "covered_ref = (arr[..., 0] > arr[..., 2] + 60) & (arr[..., 0] >= arr[..., 1])",
+        f'print("Reference covered:", round(int(covered_ref.sum()) * {px_area:.6f}, 2), "m²")',
         "```",
         "",
-        "Compare the printed value with `act_coverage.areas_m2.covered` in `validation_summary.yaml`.",
-        "They should match to within ~0.5 m² (the only source of difference is edge anti-aliasing,",
-        "which doesn't exist here since the PNG is rendered pixel-for-pixel with no AA — so the",
-        "match should be exact).",
+        "Compare the printed values with `act_coverage.areas_m2.covered` and",
+        "`ref_coverage.areas_m2.covered` in `validation_summary.yaml`. They should match",
+        "to within ~0.5 m² (the only source of difference is the 45% blend boundary where",
+        "shaded floor and shaded covered cells get visually similar; the YAML's count is",
+        "computed directly from the boolean mask and is the ground truth).",
         "",
         "### Measuring distances with Photoshop's ruler",
         "1. **File → Open** the PNG.",
@@ -350,7 +366,7 @@ def export_validation_bundle(
         if ref_result is None:
             raise ValueError("ref_coverage requested but ref_result is None")
         png_path = os.path.join(out_dir, "ref_coverage.png")
-        img = render_coverage_fast(ref_result, color=COLOUR_COVERED, bg_pgm=bg_pgm)
+        img = render_coverage_fast(ref_result, color=COLOUR_REF, bg_pgm=bg_pgm)
         img.save(png_path, "PNG")
         written["ref_coverage"] = {
             "png": png_path,
@@ -364,7 +380,7 @@ def export_validation_bundle(
         if act_result is None:
             raise ValueError("act_coverage requested but act_result is None")
         png_path = os.path.join(out_dir, "act_coverage.png")
-        img = render_coverage_fast(act_result, color=COLOUR_COVERED, bg_pgm=bg_pgm)
+        img = render_coverage_fast(act_result, color=COLOUR_ACT, bg_pgm=bg_pgm)
         img.save(png_path, "PNG")
         written["act_coverage"] = {
             "png": png_path,
