@@ -176,7 +176,7 @@ def compute_footprint_reachable(
     footprint_shape: str,         # 'rectangular' | 'circular'
     resolution: float,            # meters per pixel
     start_mask: np.ndarray,       # (H, W) uint8 or 1D h*w seed
-    motion_model: str = "differential",  # 'differential' or 'holonomic'
+    motion_model: str = "differential",  # 'differential' | 'combined' | 'holonomic' | 'holonomic_xy'
     wall_safety_cells: int = 1,   # extra obstacle thickening (cells)
     logf=None,
 ) -> Tuple[np.ndarray, dict]:
@@ -350,6 +350,14 @@ def compute_footprint_reachable(
                     dy_dx = _ORIENT_MOVES.get(move_k_dir)
                     if dy_dx is not None:
                         _try_move(dy_dx)
+        elif motion_model == "holonomic_xy":
+            # World-frame X / Y translation only, no diagonals. Heading stays
+            # fixed during a translation (rotation is a separate BFS edge,
+            # handled above), so rotation and translation are never
+            # simultaneous. Decoupled XY+yaw planner for omnidirectional
+            # bases whose controller commits one axis at a time.
+            for i in (0, 4, 8, 12):  # E, N, W, S
+                _try_move(_ORIENT_MOVES[i])
         else:
             # Holonomic: any 8-neighbour, any orientation
             for (dy, dx) in _ORIENT_MOVES.values():

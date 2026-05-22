@@ -416,9 +416,12 @@ class MainWin(QMainWindow):
         os.makedirs(s.map_dir, exist_ok=True)
 
     def _motion_model_key(s):
-        """Return 'differential', 'combined', or 'holonomic' from the Motion model combo."""
+        """Return one of 'differential', 'combined', 'holonomic', 'holonomic_xy'."""
         if hasattr(s, "motion_model_combo"):
             t = s.motion_model_combo.currentText().lower()
+            # Check "XY" before the generic "holo" prefix — "Holonomic XY" matches both.
+            if "xy" in t:
+                return "holonomic_xy"
             if t.startswith("holo"):
                 return "holonomic"
             if t.startswith("combi"):
@@ -2379,7 +2382,7 @@ class MainWin(QMainWindow):
         mot_row = QHBoxLayout()
         mot_row.addWidget(QLabel("Motion model:"))
         s.motion_model_combo = QComboBox()
-        s.motion_model_combo.addItems(["Differential", "Combined", "Holonomic"])
+        s.motion_model_combo.addItems(["Differential", "Combined", "Holonomic", "Holonomic XY"])
         s.motion_model_combo.setToolTip(
             "Differential: rotate in place, drive forward along heading only.\n"
             "    Typical for wheeled diff-drive bases (Turtlebot, AGVs).\n"
@@ -2388,7 +2391,12 @@ class MainWin(QMainWindow):
             "    pivots to an aligned heading first. Matches quadruped gaits\n"
             "    (Unitree Go2, Spot): natural forward walk + sidestep.\n"
             "Holonomic: translate in any of the 8 grid directions from any\n"
-            "    orientation. For omnidirectional bases (mecanum, swerve)."
+            "    orientation. For omnidirectional bases (mecanum, swerve).\n"
+            "Holonomic XY: translate along world X or Y only (no diagonals),\n"
+            "    plus yaw in place. Translation and rotation are never\n"
+            "    simultaneous — robot stops, then pivots, then translates.\n"
+            "    For decoupled XY+yaw planners (gantry-style, or a mecanum\n"
+            "    platform whose controller commits one axis at a time)."
         )
         mot_row.addWidget(s.motion_model_combo, 1)
         l5.addLayout(mot_row)
