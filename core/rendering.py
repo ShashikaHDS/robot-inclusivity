@@ -27,6 +27,59 @@ def render_coverage(result, pgm_path, color=(0, 200, 130)):
     return QImage(buf.tobytes(), w, h, 3 * w, QImage.Format_RGB888).copy()
 
 
+def _extra_inflation_halo(result, h, w):
+    """Cells that are blocked ONLY because of the extra inflation_radius.
+
+    Total halo = blocked & ~sourceBlocked  (includes the physical footprint
+    inflation, which can be very thick — e.g. a 0.6 m robot adds 6 px on
+    each side even before any safety margin).
+
+    To isolate just the safety-margin contribution we re-dilate
+    sourceBlocked with the PHYSICAL footprint only, then subtract that
+    physical-only inflation from `blocked`. What's left is exactly the
+    band the user's inflation_radius slider added.
+
+    Returns a (h, w) bool mask in display orientation (rows flipped), or
+    None if the result doesn't carry enough metadata.
+    """
+    import math as _math
+    params = result.get('params', {}) or {}
+    if float(params.get('inflation_radius', 0.0)) <= 0.0:
+        return None
+    blocked = result.get('blocked')
+    src_blocked = result.get('sourceBlocked')
+    if blocked is None or src_blocked is None:
+        return None
+    try:
+        from scipy.ndimage import binary_dilation as _binary_dilation
+    except ImportError:
+        return None
+    res = float(result.get('resolution', 0.05))
+    shape = params.get('shape', 'rectangular')
+    phys_halfW = float(params.get(
+        'physical_halfW',
+        params.get('physical_radius', params.get('halfW', 0.0))))
+    phys_halfL = float(params.get(
+        'physical_halfL',
+        params.get('physical_radius', params.get('halfL', 0.0))))
+    iX = max(0, int(_math.ceil(phys_halfW / res)))
+    iY = max(0, int(_math.ceil(phys_halfL / res)))
+    sb = np.asarray(src_blocked, dtype=np.uint8).reshape(h, w)
+    if iX == 0 and iY == 0:
+        phys_inflated = sb.astype(bool)
+    elif shape == 'circular':
+        r_phys = max(iX, iY)
+        yy, xx = np.ogrid[-r_phys:r_phys + 1, -r_phys:r_phys + 1]
+        struct = (xx * xx + yy * yy) <= (r_phys * r_phys)
+        phys_inflated = _binary_dilation(sb.astype(bool), structure=struct)
+    else:
+        struct = np.ones((2 * iY + 1, 2 * iX + 1), dtype=bool)
+        phys_inflated = _binary_dilation(sb.astype(bool), structure=struct)
+    blk = np.asarray(blocked, dtype=np.uint8).reshape(h, w)
+    halo = (blk == 1) & (~phys_inflated)
+    return halo[::-1, :]
+
+
 def _build_bg(h, w, result, bg_pgm=None):
     """Build an RGB background: blocked-cells-map grayscale or synthetic dark/light."""
     if bg_pgm is not None:
@@ -58,16 +111,9 @@ def render_coverage_fast(result, color=(0, 200, 130), bg_pgm=None,
     buf = _build_bg(h, w, result, bg_pgm)
 
     if show_inflation:
-        blocked = result.get('blocked')
-        src_blocked = result.get('sourceBlocked')
-        # Halo = cells inflation marked blocked but the raw obstacle map said
-        # were free. Painted SOLID (no blend) so it stands out clearly on
-        # both grayscale PGM and synthetic-light backgrounds.
-        if blocked is not None and src_blocked is not None:
-            blk = np.asarray(blocked, dtype=np.uint8).reshape(h, w)[::-1, :]
-            sb = np.asarray(src_blocked, dtype=np.uint8).reshape(h, w)[::-1, :]
-            halo = (blk == 1) & (sb == 0)
-            buf[halo] = [255, 105, 180]  # hot pink, solid
+        halo_disp = _extra_inflation_halo(result, h, w)
+        if halo_disp is not None:
+            buf[halo_disp] = [255, 105, 180]  # hot pink, solid
 
     mask = covPx == 1
     color_f = np.array(color, dtype=np.float32)
@@ -110,13 +156,9 @@ def render_compare_fast(ref, act, bg_pgm=None, show_inflation=False):
         buf[ref_only] = [255, 165, 0]
 
     if show_inflation:
-        act_blocked = act.get('blocked')
-        act_src_blocked = act.get('sourceBlocked')
-        if act_blocked is not None and act_src_blocked is not None:
-            blk = np.asarray(act_blocked, dtype=np.uint8).reshape(h, w)[::-1, :]
-            sb = np.asarray(act_src_blocked, dtype=np.uint8).reshape(h, w)[::-1, :]
-            halo = (blk == 1) & (sb == 0)
-            buf[halo] = [255, 105, 180]  # hot pink, solid — overrides ref-only orange
+        halo_disp = _extra_inflation_halo(act, h, w)
+        if halo_disp is not None:
+            buf[halo_disp] = [255, 105, 180]  # hot pink, solid — overrides ref-only orange
 
     return QImage(buf.tobytes(), w, h, 3 * w, QImage.Format_RGB888).copy()
 
