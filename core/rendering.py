@@ -43,11 +43,36 @@ def _build_bg(h, w, result, bg_pgm=None):
     return buf
 
 
-def render_coverage_fast(result, color=(0, 200, 130), bg_pgm=None):
-    """Vectorized version of render_coverage."""
+def render_coverage_fast(result, color=(0, 200, 130), bg_pgm=None,
+                         show_inflation=False):
+    """Vectorized version of render_coverage.
+
+    When ``show_inflation`` is True, cells that are floor and blocked-by-
+    inflation but free in the raw obstacle map are painted pink first, so
+    the safety-margin halo around walls is visible underneath the
+    coverage colour. Used by the Actual robot view when its
+    ``inflation_radius`` param is > 0.
+    """
     w, h = result['w'], result['h']
     covPx = result['covPx'].reshape(h, w)[::-1, :]
     buf = _build_bg(h, w, result, bg_pgm)
+
+    if show_inflation:
+        blocked = result.get('blocked')
+        src_blocked = result.get('sourceBlocked')
+        floor = result.get('floorPx')
+        if (blocked is not None and src_blocked is not None
+                and floor is not None):
+            blk = np.asarray(blocked, dtype=np.uint8).reshape(h, w)[::-1, :]
+            sb = np.asarray(src_blocked, dtype=np.uint8).reshape(h, w)[::-1, :]
+            fl = np.asarray(floor, dtype=np.uint8).reshape(h, w)[::-1, :]
+            halo = (blk == 1) & (sb == 0) & (fl == 1)
+            pink = np.array([255, 105, 180], dtype=np.float32)
+            if bg_pgm is not None:
+                buf[halo] = (0.55 * pink + 0.45 * buf[halo].astype(np.float32)).astype(np.uint8)
+            else:
+                buf[halo] = pink.astype(np.uint8)
+
     mask = covPx == 1
     color_f = np.array(color, dtype=np.float32)
     if bg_pgm is not None:

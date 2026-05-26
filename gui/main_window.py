@@ -1250,12 +1250,19 @@ class MainWin(QMainWindow):
                 w = s.rw.value(); l = s.rl.value()
                 return dict(shape='rectangular', radius=math.hypot(w/2, l/2), halfW=w/2, halfL=l/2)
         else:
+            infl = float(s.a_infl.value()) if hasattr(s, "a_infl") else 0.0
             if s.as_.currentIndex() == 0:
                 r = s.ar.value()
-                return dict(shape='circular', radius=r, halfW=r, halfL=r)
+                eff_r = r + infl
+                return dict(shape='circular', radius=eff_r, halfW=eff_r, halfL=eff_r,
+                            inflation_radius=infl, physical_radius=r)
             else:
                 w = s.aw.value(); l = s.al.value()
-                return dict(shape='rectangular', radius=math.hypot(w/2, l/2), halfW=w/2, halfL=l/2)
+                return dict(shape='rectangular',
+                            radius=math.hypot(w/2 + infl, l/2 + infl),
+                            halfW=w/2 + infl, halfL=l/2 + infl,
+                            inflation_radius=infl,
+                            physical_halfW=w/2, physical_halfL=l/2)
 
     def _get_pgm(s):
         p = s.e_pgm.text()
@@ -1819,7 +1826,7 @@ class MainWin(QMainWindow):
         "e_pgm", "e_yaml", "e_sem_pcd",
         "sel_mode", "rii_mode", "planner_combo",
         "coverage_mode", "motion_model_combo", "wall_safety_spin",
-        "rs", "rw", "rl", "as_", "ar", "aw", "al",
+        "rs", "rw", "rl", "as_", "ar", "aw", "al", "a_infl",
         "sem_filter",
         "rv_wall_min_h", "rv_wall_max_h", "rv_voxel", "rv_reach", "rv_angle",
         "rv_paint_w", "rv_paint_vspan", "rv_sweep", "rv_stride",
@@ -2455,6 +2462,26 @@ class MainWin(QMainWindow):
         arc_.addWidget(QLabel("W (m):")); s.aw = QDoubleSpinBox(); s.aw.setRange(.01, 5); s.aw.setValue(.6); s.aw.setDecimals(3); arc_.addWidget(s.aw, 1)
         arc_.addWidget(QLabel("L (m):")); s.al = QDoubleSpinBox(); s.al.setRange(.01, 5); s.al.setValue(.4); s.al.setDecimals(3); arc_.addWidget(s.al, 1)
         l5.addWidget(s.arc)
+        # Extra inflation radius — Actual-only safety margin around obstacles
+        # (Nav2-style). Adds to the physical footprint so the robot stays
+        # this much further from every wall when computing reachability.
+        infl_row = QHBoxLayout()
+        infl_row.addWidget(QLabel("Inflation radius (m):"))
+        s.a_infl = QDoubleSpinBox()
+        s.a_infl.setRange(0.0, 1.0); s.a_infl.setValue(0.0); s.a_infl.setDecimals(3); s.a_infl.setSingleStep(0.01)
+        s.a_infl.setToolTip(
+            "Extra safety margin added on top of the Actual robot's physical\n"
+            "footprint, in metres. Mirrors Nav2's costmap inflation_radius —\n"
+            "useful for keeping a safe buffer from walls (cable racks, \n"
+            "skirting, perception slop).\n"
+            "  0.00 = no extra margin (default; tight to physical footprint)\n"
+            "  0.05 = 5 cm clearance buffer\n"
+            "  0.20 = roomy clearance, treats narrow gaps as inaccessible.\n"
+            "Applied to circular and rectangular footprints alike; the\n"
+            "Reference robot stays at its ideal-puck size (no margin)."
+        )
+        infl_row.addWidget(s.a_infl, 1); infl_row.addStretch()
+        l5.addLayout(infl_row)
         start_row = QHBoxLayout()
         s.bset_start = QPushButton("Click Map to Set Start Point")
         s.bset_start.setStyleSheet(s._B_secondary())
@@ -4061,7 +4088,8 @@ class MainWin(QMainWindow):
             else:
                 trav_px = getattr(s, '_trav_pixels', None)
                 bg = trav_px if trav_px is not None else getattr(s, '_pgm_pixels', None)
-            qi = render_coverage_fast(r, (0, 229, 160), bg_pgm=bg)
+            _show_inflation = float(r.get("params", {}).get("inflation_radius", 0.0)) > 0.0
+            qi = render_coverage_fast(r, (0, 229, 160), bg_pgm=bg, show_inflation=_show_inflation)
             if s._act_start_world:
                 qi = s._draw_start_marker(qi, r, s._act_start_world)
             s._set_img("Actual Coverage", qi)

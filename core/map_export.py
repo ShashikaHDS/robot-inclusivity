@@ -380,7 +380,9 @@ def export_validation_bundle(
         if act_result is None:
             raise ValueError("act_coverage requested but act_result is None")
         png_path = os.path.join(out_dir, "act_coverage.png")
-        img = render_coverage_fast(act_result, color=COLOUR_ACT, bg_pgm=bg_pgm)
+        show_infl = float(act_result.get("params", {}).get("inflation_radius", 0.0)) > 0.0
+        img = render_coverage_fast(act_result, color=COLOUR_ACT, bg_pgm=bg_pgm,
+                                   show_inflation=show_infl)
         img.save(png_path, "PNG")
         written["act_coverage"] = {
             "png": png_path,
