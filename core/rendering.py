@@ -60,13 +60,14 @@ def render_coverage_fast(result, color=(0, 200, 130), bg_pgm=None,
     if show_inflation:
         blocked = result.get('blocked')
         src_blocked = result.get('sourceBlocked')
-        floor = result.get('floorPx')
-        if (blocked is not None and src_blocked is not None
-                and floor is not None):
+        # Halo = cells inflation marked blocked but the raw obstacle map said
+        # were free. We deliberately do NOT intersect with floorPx — in V3
+        # mode floorPx is derived from `inflated2d == 0`, which excludes the
+        # very halo cells we want to highlight.
+        if blocked is not None and src_blocked is not None:
             blk = np.asarray(blocked, dtype=np.uint8).reshape(h, w)[::-1, :]
             sb = np.asarray(src_blocked, dtype=np.uint8).reshape(h, w)[::-1, :]
-            fl = np.asarray(floor, dtype=np.uint8).reshape(h, w)[::-1, :]
-            halo = (blk == 1) & (sb == 0) & (fl == 1)
+            halo = (blk == 1) & (sb == 0)
             pink = np.array([255, 105, 180], dtype=np.float32)
             if bg_pgm is not None:
                 buf[halo] = (0.55 * pink + 0.45 * buf[halo].astype(np.float32)).astype(np.uint8)
