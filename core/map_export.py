@@ -396,7 +396,9 @@ def export_validation_bundle(
     if (ref_result is not None and act_result is not None
             and "ref_coverage" in layers and "act_coverage" in layers):
         png_path = os.path.join(out_dir, "compare.png")
-        img = render_compare_fast(ref_result, act_result, bg_pgm=bg_pgm)
+        show_infl_cmp = float(act_result.get("params", {}).get("inflation_radius", 0.0)) > 0.0
+        img = render_compare_fast(ref_result, act_result, bg_pgm=bg_pgm,
+                                  show_inflation=show_infl_cmp)
         img.save(png_path, "PNG")
         written["compare"] = {
             "png": png_path,

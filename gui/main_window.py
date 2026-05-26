@@ -4148,7 +4148,8 @@ class MainWin(QMainWindow):
         s._log(f"★ RII Horizontal = {rii:.1f}%  ({aa:.2f} / {denom:.2f} m², {denom_label})", "gold")
         if s.ref_r and s._results_share_map():
             bg_cmp = getattr(s, '_trav_pixels', None) if getattr(s, '_trav_pixels', None) is not None else getattr(s, '_pgm_pixels', None)
-            s._set_img("Compare", render_compare_fast(s.ref_r, s.act_r, bg_pgm=bg_cmp))
+            _show_infl_cmp = float(s.act_r.get("params", {}).get("inflation_radius", 0.0)) > 0.0
+            s._set_img("Compare", render_compare_fast(s.ref_r, s.act_r, bg_pgm=bg_cmp, show_inflation=_show_infl_cmp))
         elif s.ref_r:
             s._set_img("Compare", make_info_image("Reference and Actual are from different maps.\nRerun both Step 3 evaluations on the current map."))
             s._log("Compare view skipped because Reference and Actual are from different maps.", "warn")

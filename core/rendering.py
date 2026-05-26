@@ -61,18 +61,13 @@ def render_coverage_fast(result, color=(0, 200, 130), bg_pgm=None,
         blocked = result.get('blocked')
         src_blocked = result.get('sourceBlocked')
         # Halo = cells inflation marked blocked but the raw obstacle map said
-        # were free. We deliberately do NOT intersect with floorPx — in V3
-        # mode floorPx is derived from `inflated2d == 0`, which excludes the
-        # very halo cells we want to highlight.
+        # were free. Painted SOLID (no blend) so it stands out clearly on
+        # both grayscale PGM and synthetic-light backgrounds.
         if blocked is not None and src_blocked is not None:
             blk = np.asarray(blocked, dtype=np.uint8).reshape(h, w)[::-1, :]
             sb = np.asarray(src_blocked, dtype=np.uint8).reshape(h, w)[::-1, :]
             halo = (blk == 1) & (sb == 0)
-            pink = np.array([255, 105, 180], dtype=np.float32)
-            if bg_pgm is not None:
-                buf[halo] = (0.55 * pink + 0.45 * buf[halo].astype(np.float32)).astype(np.uint8)
-            else:
-                buf[halo] = pink.astype(np.uint8)
+            buf[halo] = [255, 105, 180]  # hot pink, solid
 
     mask = covPx == 1
     color_f = np.array(color, dtype=np.float32)
@@ -83,7 +78,15 @@ def render_coverage_fast(result, color=(0, 200, 130), bg_pgm=None,
     return QImage(buf.tobytes(), w, h, 3 * w, QImage.Format_RGB888).copy()
 
 
-def render_compare_fast(ref, act, bg_pgm=None):
+def render_compare_fast(ref, act, bg_pgm=None, show_inflation=False):
+    """Side-by-side comparison overlay.
+
+    When ``show_inflation`` is True, the Actual robot's inflation halo
+    (cells blocked by inflation but free in the raw obstacle map) is
+    painted solid hot pink on top of the green/orange overlay so the
+    safety buffer added by the Actual's inflation_radius is visible
+    against the Reference's wider coverage.
+    """
     if not ref or not act:
         return make_info_image("Run both Reference and Actual on the same map to compare coverage.")
     if int(ref.get("w", -1)) != int(act.get("w", -1)) or int(ref.get("h", -1)) != int(act.get("h", -1)):
@@ -105,6 +108,16 @@ def render_compare_fast(ref, act, bg_pgm=None):
     else:
         buf[ac_mask] = [0, 200, 130]
         buf[ref_only] = [255, 165, 0]
+
+    if show_inflation:
+        act_blocked = act.get('blocked')
+        act_src_blocked = act.get('sourceBlocked')
+        if act_blocked is not None and act_src_blocked is not None:
+            blk = np.asarray(act_blocked, dtype=np.uint8).reshape(h, w)[::-1, :]
+            sb = np.asarray(act_src_blocked, dtype=np.uint8).reshape(h, w)[::-1, :]
+            halo = (blk == 1) & (sb == 0)
+            buf[halo] = [255, 105, 180]  # hot pink, solid — overrides ref-only orange
+
     return QImage(buf.tobytes(), w, h, 3 * w, QImage.Format_RGB888).copy()
 
 
