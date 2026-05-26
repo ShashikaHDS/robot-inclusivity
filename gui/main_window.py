@@ -4110,7 +4110,23 @@ class MainWin(QMainWindow):
             else:
                 trav_px = getattr(s, '_trav_pixels', None)
                 bg = trav_px if trav_px is not None else getattr(s, '_pgm_pixels', None)
-            _show_inflation = float(r.get("params", {}).get("inflation_radius", 0.0)) > 0.0
+            infl_r_val = float(r.get("params", {}).get("inflation_radius", 0.0))
+            _show_inflation = infl_r_val > 0.0
+            try:
+                _h, _w = int(r["h"]), int(r["w"])
+                import numpy as _np
+                _blk = _np.asarray(r["blocked"], dtype=_np.uint8).reshape(_h, _w)
+                _sb = _np.asarray(r["sourceBlocked"], dtype=_np.uint8).reshape(_h, _w)
+                _halo_cells = int(((_blk == 1) & (_sb == 0)).sum())
+            except Exception:
+                _halo_cells = -1
+            s._log(
+                f"[Actual halo] inflation_radius={infl_r_val:.3f} m, "
+                f"halo_cells={_halo_cells}, show={_show_inflation}, "
+                f"slider={s.a_infl_slider.value() if hasattr(s, 'a_infl_slider') else 'n/a'}, "
+                f"spinbox={s.a_infl.value() if hasattr(s, 'a_infl') else 'n/a'}",
+                "info",
+            )
             qi = render_coverage_fast(r, (0, 229, 160), bg_pgm=bg, show_inflation=_show_inflation)
             if s._act_start_world:
                 qi = s._draw_start_marker(qi, r, s._act_start_world)
