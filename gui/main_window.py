@@ -23,7 +23,7 @@ from PyQt5.QtWidgets import (
     QDoubleSpinBox, QSpinBox,
     QProgressBar, QTextEdit,
     QCheckBox, QListWidget, QListWidgetItem,
-    QFileDialog, QMessageBox, QSizePolicy, QDialog,
+    QFileDialog, QMessageBox, QSizePolicy, QDialog, QSlider,
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QRect, QSettings
 from PyQt5.QtGui import QImage, QColor, QIcon, QKeySequence
@@ -2465,22 +2465,44 @@ class MainWin(QMainWindow):
         # Extra inflation radius — Actual-only safety margin around obstacles
         # (Nav2-style). Adds to the physical footprint so the robot stays
         # this much further from every wall when computing reachability.
+        # Slider + spinbox are kept in sync; both are manually adjustable.
         infl_row = QHBoxLayout()
         infl_row.addWidget(QLabel("Inflation radius (m):"))
+        s.a_infl_slider = QSlider(Qt.Horizontal)
+        s.a_infl_slider.setRange(0, 1000)   # 0..1000 = 0.000..1.000 m (1 mm precision)
+        s.a_infl_slider.setValue(0)
+        s.a_infl_slider.setTickPosition(QSlider.TicksBelow)
+        s.a_infl_slider.setTickInterval(100)  # ticks every 0.1 m
         s.a_infl = QDoubleSpinBox()
         s.a_infl.setRange(0.0, 1.0); s.a_infl.setValue(0.0); s.a_infl.setDecimals(3); s.a_infl.setSingleStep(0.01)
-        s.a_infl.setToolTip(
+        # Keep slider and spinbox in sync without recursion.
+        def _infl_from_slider(v, _box=s.a_infl):
+            new = v / 1000.0
+            if abs(_box.value() - new) > 1e-6:
+                _box.blockSignals(True); _box.setValue(new); _box.blockSignals(False)
+        def _infl_from_spin(v, _sl=s.a_infl_slider):
+            new = int(round(v * 1000))
+            if _sl.value() != new:
+                _sl.blockSignals(True); _sl.setValue(new); _sl.blockSignals(False)
+        s.a_infl_slider.valueChanged.connect(_infl_from_slider)
+        s.a_infl.valueChanged.connect(_infl_from_spin)
+        tip = (
             "Extra safety margin added on top of the Actual robot's physical\n"
             "footprint, in metres. Mirrors Nav2's costmap inflation_radius —\n"
-            "useful for keeping a safe buffer from walls (cable racks, \n"
+            "useful for keeping a safe buffer from walls (cable racks,\n"
             "skirting, perception slop).\n"
             "  0.00 = no extra margin (default; tight to physical footprint)\n"
             "  0.05 = 5 cm clearance buffer\n"
             "  0.20 = roomy clearance, treats narrow gaps as inaccessible.\n"
+            "Slider (drag) and spinbox (type / click) stay in sync. After\n"
+            "changing the value, click 'Run Actual' to recompute coverage.\n"
             "Applied to circular and rectangular footprints alike; the\n"
             "Reference robot stays at its ideal-puck size (no margin)."
         )
-        infl_row.addWidget(s.a_infl, 1); infl_row.addStretch()
+        s.a_infl.setToolTip(tip)
+        s.a_infl_slider.setToolTip(tip)
+        infl_row.addWidget(s.a_infl_slider, 3)
+        infl_row.addWidget(s.a_infl, 1)
         l5.addLayout(infl_row)
         start_row = QHBoxLayout()
         s.bset_start = QPushButton("Click Map to Set Start Point")
