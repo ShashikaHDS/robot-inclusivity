@@ -197,24 +197,21 @@ class MainWin(QMainWindow):
             return "Embedded 3D point-cloud viewer ready via pyqtgraph.opengl."
         return "pyqtgraph.opengl is unavailable; using lightweight point-cloud preview."
 
-    # ── Theme constants — soft dark grey-blue (Nord-inspired) ─────────
-    # Lighter and warmer than the slate-950 first pass which read as
-    # near-black. Still clearly a dark theme but easy on the eyes and
-    # visibly distinct from pure black.
-    _ACCENT = "#10b981"           # emerald-500 primary
-    _ACCENT_HOVER = "#059669"     # emerald-600 hover
-    _ACCENT_SECONDARY = "#34d399" # emerald-400 secondary
-    _DANGER = "#ef4444"           # red-500
-    _BG = "#2e3440"               # Nord 0 polar night — soft dark blue-grey
-    _BG_PANEL = "#3b4252"         # Nord 1 — sidebar / sub-panels
-    _BG_INPUT = "#434c5e"         # Nord 2 — inputs / log
-    _BG_HOVER = "#4c566a"         # Nord 3 — hover state
-    _BG_SELECTION = "#0d4a3a"     # darkened emerald selection tint
-    _BORDER = "#4c566a"           # Nord 3 — normal border
-    _BORDER_FOCUS = "#34d399"     # emerald-400 focused border
-    _TEXT = "#eceff4"             # Nord 6 snow storm — primary text
-    _TEXT_SECONDARY = "#d8dee9"   # Nord 4 — secondary text
-    _TEXT_MUTED = "#8995a6"       # cool grey muted text
+    # ── Theme constants — light/white (same as the regular pipeline) ──
+    _ACCENT = "#2563eb"           # primary blue
+    _ACCENT_HOVER = "#1d4ed8"     # darker blue on hover
+    _ACCENT_SECONDARY = "#3b82f6" # lighter blue for secondary actions
+    _DANGER = "#dc2626"           # red for destructive actions
+    _BG = "#ffffff"
+    _BG_PANEL = "#f8f9fa"
+    _BG_INPUT = "#ffffff"
+    _BG_HOVER = "#f3f4f6"
+    _BG_SELECTION = "#dbeafe"
+    _BORDER = "#d1d5db"
+    _BORDER_FOCUS = "#2563eb"
+    _TEXT = "#1f2937"
+    _TEXT_SECONDARY = "#6b7280"
+    _TEXT_MUTED = "#9ca3af"
 
     def _theme(s):
         s.setStyleSheet(f"""
@@ -272,7 +269,7 @@ class MainWin(QMainWindow):
             }}
             QGroupBox::title {{
                 subcontrol-origin: margin; left: 10px; padding: 2px 6px;
-                color: {s._ACCENT_SECONDARY}; font-size: 10px; font-weight: 700;
+                color: {s._TEXT}; font-size: 10px; font-weight: 700;
                 letter-spacing: 0.3px; text-transform: uppercase;
             }}
 
@@ -362,9 +359,9 @@ class MainWin(QMainWindow):
                 padding: 4px 10px; margin: 2px 2px;
                 font-size: 11px; font-weight: 600;
             }}
-            QTabBar::tab:hover {{ background: {s._BG_HOVER}; color: {s._ACCENT_SECONDARY}; border-color: {s._ACCENT}; }}
+            QTabBar::tab:hover {{ background: {s._BG_HOVER}; color: {s._ACCENT}; border-color: {s._ACCENT}; }}
             QTabBar::tab:selected {{
-                background: {s._BG_SELECTION}; color: {s._ACCENT_SECONDARY};
+                background: {s._BG_SELECTION}; color: {s._ACCENT_HOVER};
                 border: 1px solid {s._ACCENT};
             }}
         """)
@@ -372,55 +369,55 @@ class MainWin(QMainWindow):
     # Flat button styling — solid colors, simple hover/press states.
     _BTN_BASE = (
         "QPushButton {"
-        "  color: #0b1220;"
+        "  color: #ffffff;"
         "  border: none;"
         "  border-radius: 4px;"
         "  padding: 8px 12px;"
         "  font-weight: bold;"
         "  font-size: 12px;"
         "}"
-        "QPushButton:disabled { background: #1f2937; color: #4b5563; }"
+        "QPushButton:disabled { background: #e5e7eb; color: #9ca3af; }"
     )
 
     def _B(s, _c=None):
         return (
             s._BTN_BASE +
             f"QPushButton {{ background: {s._ACCENT}; }}"
-            f"QPushButton:hover {{ background: {s._ACCENT_SECONDARY}; }}"
-            f"QPushButton:pressed {{ background: {s._ACCENT_HOVER}; }}"
+            f"QPushButton:hover {{ background: {s._ACCENT_HOVER}; }}"
+            f"QPushButton:pressed {{ background: #1e40af; }}"
         )
 
     def _B_secondary(s):
         return (
             "QPushButton {"
-            f"  background: {s._BG_INPUT}; color: {s._ACCENT_SECONDARY};"
+            f"  background: #ffffff; color: {s._ACCENT};"
             f"  border: 1px solid {s._BORDER};"
             "  border-radius: 4px; padding: 8px 12px;"
             "  font-weight: bold; font-size: 12px;"
             "}"
-            f"QPushButton:hover {{ background: {s._BG_HOVER}; border-color: {s._ACCENT}; color: {s._ACCENT}; }}"
-            f"QPushButton:pressed {{ background: {s._BG_SELECTION}; }}"
-            f"QPushButton:disabled {{ background: {s._BG_PANEL}; color: {s._TEXT_MUTED}; border-color: {s._BORDER}; }}"
+            "QPushButton:hover { background: #f0f4ff; border-color: #2563eb; }"
+            "QPushButton:pressed { background: #dbeafe; }"
+            "QPushButton:disabled { background: #f3f4f6; color: #9ca3af; border-color: #e5e7eb; }"
         )
 
     def _B_danger(s):
         return (
             s._BTN_BASE +
-            f"QPushButton {{ background: {s._DANGER}; color: #ffffff; }}"
-            "QPushButton:hover { background: #dc2626; }"
-            "QPushButton:pressed { background: #b91c1c; }"
+            f"QPushButton {{ background: {s._DANGER}; }}"
+            "QPushButton:hover { background: #b91c1c; }"
+            "QPushButton:pressed { background: #991b1b; }"
         )
 
     def _B_success(s):
         return (
             s._BTN_BASE +
-            f"QPushButton {{ background: {s._ACCENT}; }}"
-            f"QPushButton:hover {{ background: {s._ACCENT_SECONDARY}; }}"
-            f"QPushButton:pressed {{ background: {s._ACCENT_HOVER}; }}"
+            "QPushButton { background: #10b981; }"
+            "QPushButton:hover { background: #059669; }"
+            "QPushButton:pressed { background: #047857; }"
         )
 
     def _log(s, m, c=""):
-        cl = {"info": "#34d399", "success": "#10b981", "warn": "#ef4444", "gold": "#fbbf24"}.get(c, "#94a3b8")
+        cl = {"info": "#2563eb", "success": "#16a34a", "warn": "#dc2626", "gold": "#d97706"}.get(c, "#6b7280")
         s.log_box.append(f'<span style="color:{cl}">[{time.strftime("%H:%M:%S")}] {m}</span>')
 
     def _init_session_cache(s):
