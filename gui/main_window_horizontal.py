@@ -197,23 +197,24 @@ class MainWin(QMainWindow):
             return "Embedded 3D point-cloud viewer ready via pyqtgraph.opengl."
         return "pyqtgraph.opengl is unavailable; using lightweight point-cloud preview."
 
-    # ── Theme constants — dark slate + emerald accent ─────────────────
-    # Distinct from the original light/blue build. Chosen to read well in
-    # office lighting and on projector screens for the client.
+    # ── Theme constants — soft dark grey-blue (Nord-inspired) ─────────
+    # Lighter and warmer than the slate-950 first pass which read as
+    # near-black. Still clearly a dark theme but easy on the eyes and
+    # visibly distinct from pure black.
     _ACCENT = "#10b981"           # emerald-500 primary
     _ACCENT_HOVER = "#059669"     # emerald-600 hover
     _ACCENT_SECONDARY = "#34d399" # emerald-400 secondary
     _DANGER = "#ef4444"           # red-500
-    _BG = "#0b1220"               # slate-950 window
-    _BG_PANEL = "#111827"         # slate-900 sidebar / sub-panels
-    _BG_INPUT = "#1f2937"         # slate-800 inputs / log
-    _BG_HOVER = "#1e293b"         # slate-800 muted hover
-    _BG_SELECTION = "#064e3b"     # emerald-900 selection tint
-    _BORDER = "#374151"           # slate-700 normal border
+    _BG = "#2e3440"               # Nord 0 polar night — soft dark blue-grey
+    _BG_PANEL = "#3b4252"         # Nord 1 — sidebar / sub-panels
+    _BG_INPUT = "#434c5e"         # Nord 2 — inputs / log
+    _BG_HOVER = "#4c566a"         # Nord 3 — hover state
+    _BG_SELECTION = "#0d4a3a"     # darkened emerald selection tint
+    _BORDER = "#4c566a"           # Nord 3 — normal border
     _BORDER_FOCUS = "#34d399"     # emerald-400 focused border
-    _TEXT = "#f1f5f9"             # slate-100 primary text
-    _TEXT_SECONDARY = "#cbd5e1"   # slate-300 secondary text
-    _TEXT_MUTED = "#94a3b8"       # slate-400 muted text
+    _TEXT = "#eceff4"             # Nord 6 snow storm — primary text
+    _TEXT_SECONDARY = "#d8dee9"   # Nord 4 — secondary text
+    _TEXT_MUTED = "#8995a6"       # cool grey muted text
 
     def _theme(s):
         s.setStyleSheet(f"""
