@@ -47,7 +47,7 @@ def _run_gui() -> None:
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     win = MainWin()
-    win.setWindowTitle("Robot Inclusivity Index (RII) — Horizontal")
+    win.setWindowTitle("Robot Accessibility")
     win.show()
     sig_timer = QTimer()
     sig_timer.timeout.connect(
