@@ -1581,7 +1581,7 @@ class MainWin(QMainWindow):
                 aa = s._result_area(s.act_r)
                 fa = s._result_floor_area(s.act_r)
                 rii = (aa / fa * 100) if fa > 0 else 0
-                w.writerow(["RII_Horizontal_%", f"{rii:.2f}"])
+                w.writerow(["Robot_Accessibility_%", f"{rii:.2f}"])
                 w.writerow(["Accessible_Area_m2", f"{aa:.4f}"])
                 w.writerow(["Total_Floor_Area_m2", f"{fa:.4f}"])
                 w.writerow(["Planner", s.act_r.get("planner", "None")])
@@ -1796,7 +1796,7 @@ class MainWin(QMainWindow):
         s._sb_worker.setStyleSheet(f"color: {color};")
 
     # ── Pipeline stepper ──────────────────────────────────────────────────
-    _STEP_LABELS = ["View PCD", "Build Map", "RII Horizontal"]
+    _STEP_LABELS = ["View PCD", "Build Map", "Robot Accessibility"]
 
     def _build_stepper(s):
         w = StepIndicator(s._STEP_LABELS)
@@ -2444,7 +2444,7 @@ class MainWin(QMainWindow):
 
         # Reference robot
         l5.addWidget(QLabel("─── Reference Robot (comparison only) ───"))
-        l5.addWidget(QLabel("Optional benchmark footprint for comparison only. It does not set the RII Horizontal denominator."))
+        l5.addWidget(QLabel("Optional benchmark footprint for comparison only. It does not set the Robot Accessibility denominator."))
         rsh = QHBoxLayout(); rsh.addWidget(QLabel("Shape:"))
         s.rs = QComboBox(); s.rs.addItems(["circular", "rectangular"])
         s.rs.currentIndexChanged.connect(lambda: s._toggle_shape('r')); rsh.addWidget(s.rs, 1); l5.addLayout(rsh)
@@ -2466,7 +2466,7 @@ class MainWin(QMainWindow):
 
         # Actual robot
         l5.addWidget(QLabel("─── Actual Robot (your real platform) ───"))
-        l5.addWidget(QLabel("RII Horizontal = inflated accessible area / total floor area. 'With Path Planner' keeps only the largest connected inflated-accessible region."))
+        l5.addWidget(QLabel("Robot Accessibility = inflated accessible area / total floor area. 'With Path Planner' keeps only the largest connected inflated-accessible region."))
         ash = QHBoxLayout(); ash.addWidget(QLabel("Shape:"))
         s.as_ = QComboBox(); s.as_.addItems(["circular", "rectangular"]); s.as_.setCurrentIndex(1)
         s.as_.currentIndexChanged.connect(lambda: s._toggle_shape('a')); ash.addWidget(s.as_, 1); l5.addLayout(ash)
@@ -2549,7 +2549,7 @@ class MainWin(QMainWindow):
         s.riif.setStyleSheet("QFrame{background:#f0f4ff;border:1px solid #d1d5db;border-radius:8px;padding:12px}")
         rf = QVBoxLayout(s.riif)
         rf.setSpacing(6)
-        s.riit = QLabel("RII Horizontal"); s.riit.setAlignment(Qt.AlignCenter)
+        s.riit = QLabel("Robot Accessibility"); s.riit.setAlignment(Qt.AlignCenter)
         s.riit.setStyleSheet("color:#1f2937;font-size:18px;font-weight:bold;letter-spacing:1px")
         rf.addWidget(s.riit)
         s.riiv = QLabel("—"); s.riiv.setAlignment(Qt.AlignCenter)
@@ -2562,13 +2562,13 @@ class MainWin(QMainWindow):
         s.riif.hide(); l5.addWidget(s.riif)
 
         g5.setLayout(l5)
-        section5 = CollapsibleSection(3, "RII Horizontal", g5); ll.addWidget(section5)
+        section5 = CollapsibleSection(3, "Robot Accessibility", g5); ll.addWidget(section5)
 
-        # Step 4 — RII Horizontal Analysis
+        # Step 4 — Robot Accessibility Analysis
         g6 = QWidget(); l6 = QVBoxLayout(); l6.setSpacing(8)
         l6.addWidget(QLabel(
             "Load a CloudCompare-labeled PCD or PLY (labels 0-15 from the paper taxonomy)\n"
-            "to explain the RII Horizontal gap by fixation group and recommended interventions."
+            "to explain the Robot Accessibility gap by fixation group and recommended interventions."
         ))
 
         hsem = QHBoxLayout()
@@ -2597,7 +2597,7 @@ class MainWin(QMainWindow):
                     f"QPushButton:hover {{ background: #f0f4ff; border-color: #2563eb; }}"
                     f"QPushButton:disabled {{ background: #f3f4f6; color: #9ca3af; }}")
 
-        s.bsem = QPushButton("Analyze RII Horizontal"); s.bsem.setStyleSheet(s._B())
+        s.bsem = QPushButton("Analyze Robot Accessibility"); s.bsem.setStyleSheet(s._B())
         s.bsem.clicked.connect(s._run_semantic_analysis); l6.addWidget(s.bsem)
 
         s.sem_prog_lbl = QLabel("")
@@ -2801,13 +2801,13 @@ class MainWin(QMainWindow):
         s.sem_report = QTextEdit(); s.sem_report.setReadOnly(True); s.sem_report.hide()
 
         g6.setLayout(l6)
-        section6 = CollapsibleSection(4, "RII Horizontal Analysis", g6); ll.addWidget(section6)
+        section6 = CollapsibleSection(4, "Robot Accessibility Analysis", g6); ll.addWidget(section6)
 
         # Step 5 — RII Vertical (Wall Paint Coverage)
         g7 = QWidget(); l7 = QVBoxLayout(); l7.setSpacing(8)
         l7.addWidget(QLabel(
             "Compute wall surface reachability from accessible floor using STVL raycasting.\n"
-            "Requires: labelled point cloud (Step 4) + RII Horizontal (Step 3)."
+            "Requires: labelled point cloud (Step 4) + Robot Accessibility (Step 3)."
         ))
 
         # Wall height band
@@ -2959,7 +2959,7 @@ class MainWin(QMainWindow):
         rv_cmp = QHBoxLayout(); rv_cmp.setSpacing(8)
         # RII_H (left)
         hcol = QVBoxLayout(); hcol.setSpacing(2)
-        s.rv_ch_title = QLabel("RII Horizontal"); s.rv_ch_title.setAlignment(Qt.AlignCenter)
+        s.rv_ch_title = QLabel("Robot Accessibility"); s.rv_ch_title.setAlignment(Qt.AlignCenter)
         s.rv_ch_title.setStyleSheet("color:#1f2937;font-size:11px;font-weight:bold")
         hcol.addWidget(s.rv_ch_title)
         s.rv_ch_val = QLabel("—"); s.rv_ch_val.setAlignment(Qt.AlignCenter)
@@ -4167,7 +4167,7 @@ class MainWin(QMainWindow):
         if not s.act_r:
             return
         aa = s._result_area(s.act_r)
-        # RII Horizontal denominator: the REFERENCE robot's covered area
+        # Robot Accessibility denominator: the REFERENCE robot's covered area
         # (the theoretical-best coverage for an ideal small robot on the same
         # map). Falls back to the raw floor area only if Reference hasn't
         # been run yet so the panel always has something to show.
@@ -4183,7 +4183,7 @@ class MainWin(QMainWindow):
         s.riiv.setText(f"{rii:.1f}%")
         s.riis.setText(f"{aa:.2f} / {denom:.2f} m² ({denom_label}) × 100  |  {mode_label}")
         s.riif.show()
-        s._log(f"★ RII Horizontal = {rii:.1f}%  ({aa:.2f} / {denom:.2f} m², {denom_label})", "gold")
+        s._log(f"★ Robot Accessibility = {rii:.1f}%  ({aa:.2f} / {denom:.2f} m², {denom_label})", "gold")
         if s.ref_r and s._results_share_map():
             bg_cmp = getattr(s, '_trav_pixels', None) if getattr(s, '_trav_pixels', None) is not None else getattr(s, '_pgm_pixels', None)
             _show_infl_cmp = float(s.act_r.get("params", {}).get("inflation_radius", 0.0)) > 0.0
@@ -4194,7 +4194,7 @@ class MainWin(QMainWindow):
         if s.ref_r and s._sem_pts is not None and s._sem_labels is not None:
             s._invalidate_semantic_state(
                 keep_loaded_cloud=True,
-                candidate_message="Step 3 results changed. Click 'Analyze RII_Horizontal' to re-run semantic analysis.",
+                candidate_message="Step 3 results changed. Click 'Analyze Robot Accessibility' to re-run semantic analysis.",
                 clear_progress=True,
             )
             s._log("Step 3 results changed — semantic analysis reset. Re-run Step 4 when ready.", "warn")
@@ -4232,7 +4232,7 @@ class MainWin(QMainWindow):
 
     def _run_semantic_analysis(s):
         if not s.ref_r or not s.act_r:
-            QMessageBox.warning(s, "Error", "Run both Reference and Actual RII Horizontal evaluations first (Step 3).")
+            QMessageBox.warning(s, "Error", "Run both Reference and Actual Robot Accessibility evaluations first (Step 3).")
             return
         if s._sem_load_active:
             QMessageBox.warning(s, "Error", "Wait for the labeled cloud to finish loading first.")
@@ -4820,7 +4820,7 @@ class MainWin(QMainWindow):
             QMessageBox.warning(s, "Error", "Select one or more removable-object candidates first.")
             return
         s.bsem_recompute.setEnabled(False)
-        s._log("Recomputing improved RII Horizontal — relocating selected objects to rule-safe zones…", "info")
+        s._log("Recomputing improved Robot Accessibility — relocating selected objects to rule-safe zones…", "info")
         token = s._sem_session_token
 
         def _recompute():
@@ -5193,7 +5193,7 @@ class MainWin(QMainWindow):
             color="#16a34a",
         )
         s._log(
-            f"Optimised RII Horizontal = {improved_rii:.1f}% "
+            f"Optimised Robot Accessibility = {improved_rii:.1f}% "
             f"(+{gain:.1f} pts, +{area_gain:.2f} m² accessible)",
             "success",
         )
@@ -5222,12 +5222,12 @@ class MainWin(QMainWindow):
         s._update_semantic_ready_state()
 
         # Build report HTML
-        html = '<b style="color:#1f2937;font-size:14px">RII Horizontal — Gap Analysis</b><br><br>'
+        html = '<b style="color:#1f2937;font-size:14px">Robot Accessibility — Gap Analysis</b><br><br>'
 
         floor_area = s._result_floor_area(s.act_r)
         aa = s._result_area(s.act_r)
         rii = (aa / floor_area * 100) if floor_area > 0 else 0
-        html += f'<b>RII Horizontal:</b> <span style="color:#2563eb">{rii:.1f}%</span><br>'
+        html += f'<b>Robot Accessibility:</b> <span style="color:#2563eb">{rii:.1f}%</span><br>'
         html += f'<b>Total missed area:</b> {analysis["total_missed_area"]:.2f} m²<br><br>'
 
         if analysis.get('fixation_breakdown'):
@@ -5465,7 +5465,7 @@ class MainWin(QMainWindow):
     # ════ RII Vertical — Computation ════
     def _run_rii_vertical(s):
         if not s.act_r:
-            QMessageBox.warning(s, "Error", "Run Actual RII Horizontal first (Step 3).")
+            QMessageBox.warning(s, "Error", "Run Actual Robot Accessibility first (Step 3).")
             return
         if s._sem_pts is None or s._sem_labels is None:
             QMessageBox.warning(s, "Error", "Load a labelled point cloud first (Step 4).")
