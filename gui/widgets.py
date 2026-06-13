@@ -87,6 +87,21 @@ class MapW(QWidget):
         s._edit_undo = []
         s._edit_redo = []
         s._edit_undo_cap = 20
+        # Manual relocation mode (Step 4 drag-and-drop). When active, the
+        # owner installs callbacks that accept (col, row) image-coords on
+        # press / move / release. Press returns True if it picked up an
+        # object; on True we route subsequent moves and the release to the
+        # owner's handlers instead of starting a pan/select drag.
+        s.manual_relocate_active  = False
+        s.manual_relocate_press   = None
+        s.manual_relocate_move    = None
+        s.manual_relocate_release = None
+        # Drag-ghost overlay: a small RGBA QImage of the picked-up object,
+        # drawn translated by offset_yx (in BASE map pixels). Updated on
+        # every mouse-move so the drag feels live, independent of BFS.
+        s._drag_ghost_img        = None     # QImage of bbox-sized RGBA blob
+        s._drag_ghost_origin_yx  = None     # (row, col) of QImage top-left in base map coords
+        s._drag_ghost_offset_yx  = (0, 0)   # (dy, dx) — added to origin each paint
         s._ref_overlay = None
         s._ref_overlay_visible = False
         s._transition_overlay = None   # QImage for ramp/step overlay
@@ -336,6 +351,16 @@ class MapW(QWidget):
     def mousePressEvent(s, e):
         if not s._bp:
             return
+        # Manual relocation: pick up a candidate (if cursor is over one).
+        # The owner-supplied callback returns True when an object was picked.
+        if (s.manual_relocate_active and e.button() == Qt.LeftButton
+                and callable(s.manual_relocate_press)):
+            pt = s._ic(e.pos(), clamp=True)
+            if pt is not None and s.manual_relocate_press(pt):
+                s._drag_mode = "manual_relocate"
+                s.setCursor(Qt.ClosedHandCursor)
+                s.update()
+                return
         # Start point picking mode
         if s._pick_start_mode and e.button() == Qt.LeftButton:
             pt = s._ic(e.pos(), clamp=True)
@@ -380,6 +405,28 @@ class MapW(QWidget):
         s._map_origin = (origin[0], origin[1])
         s._map_hw = (height, width)
 
+    # ── Drag-ghost API (Step 4 manual relocation) ──
+    def begin_drag_ghost(s, ghost_img, origin_yx):
+        """Install a translucent ghost image for the dragged object.
+
+        ghost_img : QImage (bbox-sized RGBA) of the cells being moved
+        origin_yx : (row, col) of the QImage top-left in base map coords
+        """
+        s._drag_ghost_img       = ghost_img
+        s._drag_ghost_origin_yx = origin_yx
+        s._drag_ghost_offset_yx = (0, 0)
+        s.update()
+
+    def update_drag_ghost_offset(s, offset_yx):
+        s._drag_ghost_offset_yx = offset_yx
+        s.update()
+
+    def clear_drag_ghost(s):
+        s._drag_ghost_img       = None
+        s._drag_ghost_origin_yx = None
+        s._drag_ghost_offset_yx = (0, 0)
+        s.update()
+
     def mouseMoveEvent(s, e):
         # Emit world coordinates on hover
         pt = s._ic(e.pos())
@@ -390,6 +437,21 @@ class MapW(QWidget):
             world_y = s._map_origin[1] + (h - 1 - py) * s._map_resolution
             s.hover_coords.emit(px, py, world_x, world_y)
 
+        if s._drag_mode == "manual_relocate":
+            if not (e.buttons() & Qt.LeftButton):
+                # Lost mouse — treat as release at last known position
+                s._drag_mode = None
+                s.setCursor(Qt.ArrowCursor)
+                if callable(s.manual_relocate_release):
+                    pt2 = s._ic(e.pos(), clamp=True)
+                    if pt2 is not None:
+                        s.manual_relocate_release(pt2)
+                return
+            pt2 = s._ic(e.pos(), clamp=True)
+            if pt2 is not None and callable(s.manual_relocate_move):
+                s.manual_relocate_move(pt2)
+            s.update()
+            return
         if s._drag_mode == "edit":
             # Defensive: if the mouse button is no longer pressed (e.g. user
             # released outside the widget), end the stroke instead of
@@ -460,6 +522,15 @@ class MapW(QWidget):
             s._last_pos = e.pos()
             s.update()
     def mouseReleaseEvent(s, e):
+        if s._drag_mode == "manual_relocate":
+            s._drag_mode = None
+            s.setCursor(Qt.ArrowCursor)
+            if callable(s.manual_relocate_release):
+                pt = s._ic(e.pos(), clamp=True)
+                if pt is not None:
+                    s.manual_relocate_release(pt)
+            s.update()
+            return
         if s._drag_mode == "edit":
             s._drag_mode = None
             s._last_edit_pt = None
@@ -593,6 +664,32 @@ class MapW(QWidget):
                 p.fillRect(tag_rect, QColor(255, 255, 255, 220))
                 p.setPen(QColor(37, 99, 235))
                 p.drawText(tag_rect.adjusted(6, 0, -6, 0), Qt.AlignVCenter | Qt.AlignLeft, s._focus_label)
+        # Drag-ghost overlay (Step 4 manual relocation). Painted after the
+        # heatmap so the ghost sits on top, and before the start-point
+        # marker so the seed pin always stays visible.
+        if s._drag_ghost_img is not None and s._drag_ghost_origin_yx is not None:
+            try:
+                oy_img, ox_img = s._drag_ghost_origin_yx
+                dy, dx = s._drag_ghost_offset_yx
+                gx_img = ox_img + dx
+                gy_img = oy_img + dy
+                gw_img = s._drag_ghost_img.width()
+                gh_img = s._drag_ghost_img.height()
+                ghost_rect = QRectF(
+                    ox + gx_img * scale,
+                    oy + gy_img * scale,
+                    gw_img * scale,
+                    gh_img * scale,
+                )
+                p.setOpacity(0.65)
+                p.drawImage(ghost_rect, s._drag_ghost_img)
+                p.setOpacity(1.0)
+                # Outline the ghost for clarity
+                p.setPen(QPen(QColor(255, 140, 0), 2, Qt.DashLine))
+                p.setBrush(Qt.NoBrush)
+                p.drawRect(ghost_rect)
+            except Exception:
+                pass
         # Draw start point marker
         if s._start_point is not None:
             sx = ox + s._start_point[0] * scale

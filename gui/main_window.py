@@ -66,8 +66,6 @@ from core.RII_horizontal import (
 from core.rendering import (
     render_coverage_fast, render_compare_fast,
     render_stc_path_fast, make_info_image,
-    render_bottleneck_overlay,
-    render_optimization_overlay,
 )
 from core.semantic_analysis import (
     SEMANTIC_LABEL_NAMES, SEMANTIC_FIXATION_GROUPS,
@@ -79,10 +77,6 @@ from core.semantic_analysis import (
     identify_semantic_removal_candidates,
     simulate_removed_candidates,
     render_semantic_candidates,
-    score_bottleneck_candidates,
-    find_relocation_zones,
-    classify_candidate_actions,
-    optimize_multi_object_relocation,
 )
 from core.RII_vertical import (
     compute_rii_vertical, compute_combined_rii,
@@ -110,10 +104,6 @@ class MainWin(QMainWindow):
     sem_error_sig = pyqtSignal(int, str)
     sem_improved_sig = pyqtSignal(int, object)
     sem_improved_error_sig = pyqtSignal(int, str)
-    bottleneck_done_sig = pyqtSignal()
-    bottleneck_error_sig = pyqtSignal(str)
-    optimization_done_sig = pyqtSignal(object)
-    optimization_error_sig = pyqtSignal(str)
     sem_progress_sig = pyqtSignal(int, int, str)
     rv_result_sig = pyqtSignal(object)
     rv_error_sig = pyqtSignal(str)
@@ -147,6 +137,16 @@ class MainWin(QMainWindow):
         s._sem_session_token = 0
         s._sem_load_active = False
         s._sem_analysis_active = False
+        # ── Manual relocation mode state (Step 4 drag-and-drop) ──
+        s._mr_active = False                  # True when "Enter Manual Relocation Mode" is checked
+        s._mr_baseline_blocked = None         # original blocked mask snapshot (h*w uint8)
+        s._mr_baseline_act_r = None           # original act_r result dict snapshot
+        s._mr_baseline_rii_pct = None         # original RII % at mode entry
+        s._mr_current_blocked = None          # current modified blocked mask
+        s._mr_current_rii_pct = None          # most recent recomputed RII %
+        s._mr_history = []                    # list of applied moves [{cand_id, from_rc, to_rc, cells_xy}]
+        s._mr_drag = None                     # active drag dict or None
+        s._mr_throttle = None                 # QTimer for ~4Hz throttled BFS
         s._build(); s._theme()
         s.ui_log_sig.connect(s._log)
         s.ref_result_sig.connect(s._ref_done)
@@ -159,10 +159,6 @@ class MainWin(QMainWindow):
         s.sem_error_sig.connect(s._sem_failed)
         s.sem_improved_sig.connect(s._sem_improved_done)
         s.sem_improved_error_sig.connect(s._sem_improved_failed)
-        s.bottleneck_done_sig.connect(s._bottleneck_done)
-        s.bottleneck_error_sig.connect(s._bottleneck_failed)
-        s.optimization_done_sig.connect(s._optimization_done)
-        s.optimization_error_sig.connect(s._optimization_failed)
         s.sem_progress_sig.connect(s._sem_progress)
         s.rv_result_sig.connect(s._rv_done)
         s.rv_error_sig.connect(s._rv_failed)
@@ -2689,39 +2685,55 @@ class MainWin(QMainWindow):
         sem_btn_grid.addWidget(s.bsem_clear_candidates, 2, 1)
         l6.addLayout(sem_btn_grid)
 
-        s.bsem_recompute = QPushButton("Recompute Optimised RII (relocate selected)")
-        s.bsem_recompute.setStyleSheet(s._B())
-        s.bsem_recompute.clicked.connect(s._recompute_semantic_improvement)
-        s.bsem_recompute.setEnabled(False)
-        l6.addWidget(s.bsem_recompute)
-
-        s.bsem_bottleneck = QPushButton("Analyse Bottlenecks and Relocation")
-        s.bsem_bottleneck.setStyleSheet(s._B_secondary())
-        s.bsem_bottleneck.clicked.connect(s._run_bottleneck_analysis)
-        s.bsem_bottleneck.setEnabled(False)
-        s.bsem_bottleneck.setToolTip(
-            "Score top candidates by true area gain (BFS reachability),\n"
-            "identify chokepoint objects, and suggest relocation zones."
+        # ── Manual Relocation Mode (Step 4 manual drag-and-drop) ──
+        s.bsem_manual_relocate = QPushButton("Enter Manual Relocation Mode")
+        s.bsem_manual_relocate.setStyleSheet(s._B())
+        s.bsem_manual_relocate.setCheckable(True)
+        s.bsem_manual_relocate.setEnabled(False)
+        s.bsem_manual_relocate.setToolTip(
+            "Drag a selected semantic object on the heatmap to a new location.\n"
+            "While the button is checked, click-and-drag on a candidate moves it;\n"
+            "the RII updates live and the baseline stays visible for comparison."
         )
-        l6.addWidget(s.bsem_bottleneck)
-        s.bottleneck_status = QLabel("")
-        s.bottleneck_status.setWordWrap(True)
-        s.bottleneck_status.setStyleSheet("color:#6b7280;font-size:11px")
-        l6.addWidget(s.bottleneck_status)
+        s.bsem_manual_relocate.clicked.connect(s._toggle_manual_relocate_mode)
+        l6.addWidget(s.bsem_manual_relocate)
 
-        s.bsem_optimize = QPushButton("Optimize Layout (Multi-Object)")
-        s.bsem_optimize.setStyleSheet(s._B())
-        s.bsem_optimize.clicked.connect(s._run_optimization)
-        s.bsem_optimize.setEnabled(False)
-        s.bsem_optimize.setToolTip(
-            "Greedy multi-object relocation: iteratively move bottleneck objects\n"
-            "to low-traffic spots, re-evaluating after each move."
-        )
-        l6.addWidget(s.bsem_optimize)
-        s.optimization_status = QLabel("")
-        s.optimization_status.setWordWrap(True)
-        s.optimization_status.setStyleSheet("color:#6b7280;font-size:11px")
-        l6.addWidget(s.optimization_status)
+        s.bsem_reset_relocations = QPushButton("Reset to Baseline")
+        s.bsem_reset_relocations.setStyleSheet(s._B_secondary())
+        s.bsem_reset_relocations.setEnabled(False)
+        s.bsem_reset_relocations.setToolTip("Discard all manual relocations and restore the original layout.")
+        s.bsem_reset_relocations.clicked.connect(s._reset_manual_relocations)
+        l6.addWidget(s.bsem_reset_relocations)
+
+        s.manual_relocate_status = QLabel("")
+        s.manual_relocate_status.setWordWrap(True)
+        s.manual_relocate_status.setStyleSheet("color:#6b7280;font-size:11px")
+        l6.addWidget(s.manual_relocate_status)
+
+        # Side-by-side RII display (baseline vs current after manual moves)
+        s.manual_rii_row = QFrame()
+        s.manual_rii_row.setStyleSheet(
+            "QFrame{background:#f0f4ff;border:1px solid #d1d5db;border-radius:6px;padding:8px}")
+        _mrii_l = QHBoxLayout(s.manual_rii_row); _mrii_l.setSpacing(12)
+        _base_col = QVBoxLayout()
+        _base_lbl = QLabel("Baseline RII"); _base_lbl.setStyleSheet("color:#374151;font-size:10px;font-weight:600")
+        s.manual_baseline_rii = QLabel("—")
+        s.manual_baseline_rii.setStyleSheet("color:#1f2937;font-size:16px;font-weight:700;font-family:monospace")
+        _base_col.addWidget(_base_lbl); _base_col.addWidget(s.manual_baseline_rii)
+        _cur_col = QVBoxLayout()
+        _cur_lbl = QLabel("Current RII (after moves)"); _cur_lbl.setStyleSheet("color:#374151;font-size:10px;font-weight:600")
+        s.manual_current_rii = QLabel("—")
+        s.manual_current_rii.setStyleSheet("color:#16a34a;font-size:16px;font-weight:700;font-family:monospace")
+        _cur_col.addWidget(_cur_lbl); _cur_col.addWidget(s.manual_current_rii)
+        _delta_col = QVBoxLayout()
+        _delta_lbl = QLabel("Δ"); _delta_lbl.setStyleSheet("color:#374151;font-size:10px;font-weight:600")
+        s.manual_delta_rii = QLabel("—")
+        s.manual_delta_rii.setStyleSheet("color:#2563eb;font-size:16px;font-weight:700;font-family:monospace")
+        _delta_col.addWidget(_delta_lbl); _delta_col.addWidget(s.manual_delta_rii)
+        _mrii_l.addLayout(_base_col); _mrii_l.addLayout(_cur_col); _mrii_l.addLayout(_delta_col)
+        _mrii_l.addStretch()
+        s.manual_rii_row.hide()
+        l6.addWidget(s.manual_rii_row)
 
         s.sem_riif = QFrame()
         s.sem_riif.setStyleSheet("QFrame{background:#f0f4ff;border:1px solid #d1d5db;border-radius:8px;padding:12px}")
@@ -4688,8 +4700,8 @@ class MainWin(QMainWindow):
             "bsem_select_portable_movable",
             "bsem_select_all_candidates",
             "bsem_clear_candidates",
-            "bsem_recompute",
-            "bsem_bottleneck",
+            "bsem_manual_relocate",
+            "bsem_reset_relocations",
         ):
             widget = getattr(s, widget_name, None)
             if widget is not None:
@@ -4786,316 +4798,310 @@ class MainWin(QMainWindow):
         s.sem_candidate_list.blockSignals(False)
         s._semantic_candidate_selection_changed()
 
-    def _recompute_semantic_improvement(s):
-        if s._sem_load_active or s._sem_analysis_active:
-            QMessageBox.warning(s, "Error", "Wait for semantic analysis to finish before recomputing the Optimised RII.")
-            return
-        if not s.act_r or not s._sem_candidates:
-            QMessageBox.warning(s, "Error", "Run Step 4 semantic analysis first.")
-            return
-        selected_ids = s._selected_semantic_candidate_ids()
-        if not selected_ids:
-            QMessageBox.warning(s, "Error", "Select one or more removable-object candidates first.")
-            return
-        s.bsem_recompute.setEnabled(False)
-        s._log("Recomputing improved RII Horizontal — relocating selected objects to rule-safe zones…", "info")
-        token = s._sem_session_token
+    # ── Manual relocation (Step 4 drag-and-drop) ─────────────────────────────
+    def _toggle_manual_relocate_mode(s, checked):
+        """Enter or leave manual relocation mode.
 
-        def _recompute():
-            try:
-                improved = simulate_removed_candidates(
-                    s.act_r,
-                    s._sem_candidates,
-                    selected_ids,
-                    label="IMPROVED",
-                    logf=lambda m, c: s.ui_log_sig.emit(m, c),
-                    label_grid=getattr(s, '_label_grid', None),
+        On entry: snapshot the current Actual result + blocked mask as the
+        baseline that the side-by-side display compares against, and install
+        the MapW mouse handlers that pick up semantic candidates and drag
+        them around.
+        """
+        if checked:
+            if not (s.act_r and s._label_grid is not None and s._sem_candidates):
+                QMessageBox.information(
+                    s, "Manual Relocation",
+                    "Load a semantic point cloud and run analysis first so the candidate list is populated.",
                 )
-                if token == s._sem_session_token:
-                    s.sem_improved_sig.emit(token, improved)
-            except Exception as e:
-                import traceback; traceback.print_exc()
-                if token == s._sem_session_token:
-                    s.sem_improved_error_sig.emit(token, str(e))
-
-        threading.Thread(target=_recompute, daemon=True).start()
-
-    def _run_bottleneck_analysis(s):
-        if not s.act_r or not s._sem_candidates:
-            QMessageBox.warning(s, "Error", "Run Step 4 semantic analysis first.")
-            return
-        s.bsem_bottleneck.setEnabled(False)
-        s.bottleneck_status.setText("Scoring bottlenecks...")
-        s._log("Starting bottleneck analysis (BFS reachability for top candidates)...", "info")
-
-        # Ensure act_result has resolution for bottleneck scoring
-        act = s.act_r
-        if "resolution" not in act:
-            yaml_path = s.e_yaml.text()
-            if yaml_path and os.path.isfile(yaml_path):
-                from core.map_io import parse_yaml
-                yd = parse_yaml(yaml_path)
-                act["resolution"] = yd["resolution"]
-            else:
-                act["resolution"] = 0.05
-
-        candidates = list(s._sem_candidates)
-
-        # Same selection-aware filtering as the optimizer flow.
-        sel_mask_1d = s._make_sel_mask() if hasattr(s, "_make_sel_mask") else None
-        if sel_mask_1d is not None:
-            sel_flat = np.asarray(sel_mask_1d).reshape(-1)
-            kept = []
-            for c in candidates:
-                idx = c.get("indices")
-                if idx is None or len(idx) == 0:
-                    continue
-                if float((sel_flat[idx] > 0).mean()) >= 0.5:
-                    kept.append(c)
-            s._log(
-                f"[Selection] Bottleneck analysis restricted to selection: "
-                f"{len(kept)}/{len(candidates)} candidates kept.",
-                "info",
-            )
-            candidates = kept
-            if not candidates:
-                s._log("[Selection] No candidates inside the selection.", "warn")
+                s.bsem_manual_relocate.setChecked(False)
                 return
-
-        def _analyse():
-            try:
-                def prog(done, total, name):
-                    s.ui_log_sig.emit(f"  Bottleneck {done}/{total}: {name}", "")
-
-                score_bottleneck_candidates(act, candidates, top_n=20, progress_cb=prog)
-                s.ui_log_sig.emit(f"Bottleneck scoring done. Finding relocation zones for chokepoints...", "info")
-
-                reloc = {}
-                bottlenecks = [c for c in candidates if c.get("isBottleneck")]
-                lg = getattr(s, '_label_grid', None)
-                for i, cand in enumerate(bottlenecks[:10]):
-                    peer_id = cand.get("label")  # same-label peer attraction
-                    zones = find_relocation_zones(act, cand,
-                                                   label_grid=lg,
-                                                   peer_label_id=peer_id)
-                    if zones:
-                        reloc[cand["id"]] = zones
-                    s.ui_log_sig.emit(
-                        f"  Relocation {i+1}/{min(len(bottlenecks),10)}: "
-                        f"#{cand['id']} {cand.get('name','')} — {len(zones)} zone(s)",
-                        "",
-                    )
-
-                classify_candidate_actions(candidates, reloc)
-
-                # Summary
-                n_bottleneck = sum(1 for c in candidates if c.get("isBottleneck"))
-                n_relocate = sum(1 for c in candidates if c.get("actionType") == "Relocate")
-                n_remove = sum(1 for c in candidates if c.get("actionType") == "Remove")
-                s.ui_log_sig.emit(
-                    f"Bottleneck analysis complete: {n_bottleneck} chokepoints, "
-                    f"{n_relocate} relocatable, {n_remove} remove-only.",
-                    "success",
-                )
-
-                # Update GUI on main thread via signal
-                s.bottleneck_done_sig.emit()
-            except Exception as e:
-                import traceback; traceback.print_exc()
-                s.ui_log_sig.emit(f"Bottleneck analysis failed: {e}", "warn")
-                s.bottleneck_error_sig.emit(str(e))
-
-        threading.Thread(target=_analyse, daemon=True).start()
-
-    def _bottleneck_done(s):
-        s.bsem_bottleneck.setEnabled(True)
-        n_bottleneck = sum(1 for c in s._sem_candidates if c.get("isBottleneck"))
-        n_relocate = sum(1 for c in s._sem_candidates if c.get("actionType") == "Relocate")
-        n_remove = sum(1 for c in s._sem_candidates if c.get("actionType") == "Remove")
-        s.bottleneck_status.setText(
-            f"{n_bottleneck} chokepoint(s) found  |  "
-            f"{n_relocate} can be relocated  |  "
-            f"{n_remove} should be removed"
-        )
-        # Re-sort: bottlenecks first, then by true unlock area
-        s._sem_candidates.sort(
-            key=lambda c: (-int(c.get("isBottleneck", False)), -c.get("trueUnlockArea", 0))
-        )
-        s._populate_semantic_candidates(s._sem_candidates)
-        s._render_bottleneck_view()
-        s.bsem_optimize.setEnabled(True)
-
-    def _render_bottleneck_view(s, focused_id=None):
-        if not s.act_r or not s._sem_candidates:
-            return
-        bg = getattr(s, '_trav_pixels', None) if getattr(s, '_trav_pixels', None) is not None else getattr(s, '_pgm_pixels', None)
-        qi = render_bottleneck_overlay(s.act_r, s._sem_candidates, bg_pgm=bg, focused_id=focused_id)
-        s._set_img("Bottleneck", qi)
-
-    def _run_optimization(s):
-        if not s.act_r or not s._sem_candidates:
-            QMessageBox.warning(s, "Error", "Run bottleneck analysis first.")
-            return
-        s.bsem_optimize.setEnabled(False)
-        s.optimization_status.setText("Optimizing layout...")
-        s._log("Starting multi-object layout optimization...", "info")
-
-        act = s.act_r
-        candidates = list(s._sem_candidates)
-
-        # If the user has an active selection, restrict the optimisation to
-        # objects whose footprint majority sits inside that selection. The
-        # selection has already been applied to the coverage mask in
-        # run_coverage, so relocation destinations are naturally constrained
-        # to the selection (find_relocation_zones reads act["floorPx"] which
-        # is already sel-clipped). Filtering candidates here ensures the
-        # optimiser doesn't propose moves on objects the user doesn't care
-        # about for this run.
-        sel_mask_1d = s._make_sel_mask() if hasattr(s, "_make_sel_mask") else None
-        if sel_mask_1d is not None:
-            sel_flat = np.asarray(sel_mask_1d).reshape(-1)
-            n_before = len(candidates)
-            kept = []
-            for c in candidates:
-                idx = c.get("indices")
-                if idx is None or len(idx) == 0:
-                    continue
-                inside_frac = float((sel_flat[idx] > 0).mean())
-                if inside_frac >= 0.5:
-                    kept.append(c)
-            candidates = kept
-            s._log(
-                f"[Selection] Restricting optimisation to selected area: "
-                f"{len(candidates)}/{n_before} candidates inside the selection.",
-                "info",
+            import numpy as _np
+            h = int(s.act_r["h"]); w = int(s.act_r["w"])
+            s._mr_baseline_blocked = _np.asarray(s.act_r["blocked"], dtype=_np.uint8).copy()
+            s._mr_baseline_act_r = s.act_r
+            s._mr_current_blocked = s._mr_baseline_blocked.copy()
+            denom = max(s._result_floor_area(s.act_r), 1e-9)
+            s._mr_baseline_rii_pct = (s._result_area(s.act_r) / denom) * 100.0
+            s._mr_current_rii_pct = s._mr_baseline_rii_pct
+            s._mr_history.clear()
+            s._mr_drag = None
+            s._mr_active = True
+            s.bsem_reset_relocations.setEnabled(True)
+            s.manual_rii_row.show()
+            s._refresh_manual_rii_display()
+            s.manual_relocate_status.setText(
+                "MODE: drag any selected candidate on the heatmap to relocate it. "
+                "RII updates live. Click again to leave."
             )
-            if not candidates:
-                s.bsem_optimize.setEnabled(True)
-                s.optimization_status.setText(
-                    "No candidates inside the current selection. "
-                    "Clear / widen the selection and try again."
-                )
-                s._log("[Selection] No candidates inside the selection — nothing to optimise.", "warn")
-                return
+            s._log("[Manual] Manual relocation mode ON. Baseline RII = "
+                   f"{s._mr_baseline_rii_pct:.1f}%", "info")
+            s.bsem_manual_relocate.setText("Leave Manual Relocation Mode")
+            # Install mouse hook into MapW; the widget calls back via these methods
+            if hasattr(s, "mw") and s.mw is not None:
+                s.mw.manual_relocate_press   = s._mr_on_press
+                s.mw.manual_relocate_move    = s._mr_on_move
+                s.mw.manual_relocate_release = s._mr_on_release
+                s.mw.manual_relocate_active  = True
+        else:
+            s._mr_active = False
+            s._mr_drag = None
+            s.manual_relocate_status.setText(
+                "MODE: off. Click 'Reset to Baseline' to discard moves, or re-enter the mode to continue."
+            )
+            s.bsem_manual_relocate.setText("Enter Manual Relocation Mode")
+            if hasattr(s, "mw") and s.mw is not None:
+                s.mw.manual_relocate_active = False
+                s.mw.manual_relocate_press = None
+                s.mw.manual_relocate_move = None
+                s.mw.manual_relocate_release = None
+                s.mw.clear_drag_ghost()  # nuke any leftover ghost
+            s._log("[Manual] Manual relocation mode OFF.", "info")
 
-        def _work():
+    def _reset_manual_relocations(s):
+        """Discard every manual move and restore the baseline blocked mask."""
+        if s._mr_baseline_blocked is None or s._mr_baseline_act_r is None:
+            return
+        s._mr_current_blocked = s._mr_baseline_blocked.copy()
+        s._mr_current_rii_pct = s._mr_baseline_rii_pct
+        s._mr_history.clear()
+        s._mr_drag = None
+        if hasattr(s, "mw") and s.mw is not None:
+            s.mw.clear_drag_ghost()
+        s._refresh_manual_rii_display()
+        s._render_manual_relocation_view(commit_to_act_r=True)
+        s.manual_relocate_status.setText("Restored to baseline.")
+        s._log("[Manual] Reset to baseline.", "info")
+
+    def _refresh_manual_rii_display(s):
+        """Update the baseline / current / Δ labels."""
+        if s._mr_baseline_rii_pct is None:
+            s.manual_baseline_rii.setText("—")
+            s.manual_current_rii.setText("—")
+            s.manual_delta_rii.setText("—")
+            return
+        base = s._mr_baseline_rii_pct
+        cur = s._mr_current_rii_pct if s._mr_current_rii_pct is not None else base
+        s.manual_baseline_rii.setText(f"{base:.1f}%")
+        s.manual_current_rii.setText(f"{cur:.1f}%")
+        delta = cur - base
+        sign = "+" if delta >= 0 else ""
+        s.manual_delta_rii.setText(f"{sign}{delta:.1f} pts")
+        # Recolour current/delta by sign
+        good = delta >= 0
+        s.manual_current_rii.setStyleSheet(
+            f"color:{'#16a34a' if good else '#dc2626'};font-size:16px;font-weight:700;font-family:monospace")
+        s.manual_delta_rii.setStyleSheet(
+            f"color:{'#16a34a' if good else '#dc2626'};font-size:16px;font-weight:700;font-family:monospace")
+
+    def _mr_on_press(s, scene_xy):
+        """Mouse press inside MapW while in manual mode — pick up a candidate
+        if the cursor is over one. scene_xy = (col, row) in pixel space."""
+        if not s._mr_active or not s._sem_candidates or s._label_grid is None:
+            return False
+        col, row = scene_xy
+        h = int(s.act_r["h"]); w = int(s.act_r["w"])
+        if not (0 <= row < h and 0 <= col < w):
+            return False
+        flat = row * w + col
+        # Find which candidate's indices contain this cell
+        picked = None
+        for cand in s._sem_candidates:
+            idx = cand.get("indices")
+            if idx is None:
+                continue
             try:
-                def prog(done, total, name):
-                    s.ui_log_sig.emit(f"  Optimization step {done}/{total}: {name}", "")
-
-                # Load yaml for narrow-gap world-coord origin
-                _yaml_data = None
-                try:
-                    if s.e_yaml.text() and os.path.isfile(s.e_yaml.text()):
-                        from core.map_io import parse_yaml as _py
-                        _yaml_data = _py(s.e_yaml.text())
-                except Exception:
-                    _yaml_data = None
-
-                result = optimize_multi_object_relocation(
-                    act, candidates, max_moves=10, progress_cb=prog,
-                    label_grid=getattr(s, '_label_grid', None),
-                    yaml_data=_yaml_data,
-                )
-                n = len(result["moves"])
-                gain = result["total_gain"]
-                s.ui_log_sig.emit(f"Optimization complete: {n} moves, +{gain:.1f} m² total gain", "success")
-                s.optimization_done_sig.emit(result)
-            except Exception as e:
-                import traceback; traceback.print_exc()
-                s.ui_log_sig.emit(f"Optimization failed: {e}", "warn")
-                s.optimization_error_sig.emit(str(e))
-
-        threading.Thread(target=_work, daemon=True).start()
-
-    def _optimization_done(s, result):
-        s.bsem_optimize.setEnabled(True)
-        s._optimization_result = result
-        moves = result["moves"]
-        gain = result["total_gain"]
-        orig = result["original_accessible_area"]
-        opt = result["optimized_accessible_area"]
-        floor = s._result_floor_area(s.act_r) if s.act_r else opt
-        rii_before = (orig / floor * 100) if floor > 0 else 0
-        rii_after = (opt / floor * 100) if floor > 0 else 0
-
-        s.optimization_status.setText(
-            f"{len(moves)} move(s)  |  +{gain:.1f} m² gained  |  "
-            f"RII: {rii_before:.1f}% → {rii_after:.1f}%"
-        )
-
-        # Render optimization overlay on map
-        bg = getattr(s, '_trav_pixels', None) if getattr(s, '_trav_pixels', None) is not None else getattr(s, '_pgm_pixels', None)
-        qi = render_optimization_overlay(s.act_r, result, bg_pgm=bg)
-        s._set_img("Optimization", qi)
-        s._switch_view("Optimization")
-
-        # Open popup window with details
-        s._show_optimization_popup(result)
-
-    def _optimization_failed(s, msg=""):
-        s.bsem_optimize.setEnabled(True)
-        s.optimization_status.setText(f"Optimization failed: {msg}" if msg else "Optimization failed.")
-
-    def _show_optimization_popup(s, result):
-        moves = result["moves"]
-        orig = result["original_accessible_area"]
-        opt = result["optimized_accessible_area"]
-        gain = result["total_gain"]
-        floor = s._result_floor_area(s.act_r) if s.act_r else opt
-
-        win = QMainWindow(s)
-        win.setWindowTitle("Layout Optimization Report")
-        win.resize(600, 400)
-
-        te = QTextEdit()
-        te.setReadOnly(True)
-        te.setStyleSheet("background:#ffffff;color:#1f2937;font-family:monospace;font-size:12px;padding:12px")
-
-        html = "<h2>Layout Optimization Report</h2>"
-        html += f"<p><b>Original accessible area:</b> {orig:.2f} m² ({orig/floor*100:.1f}% RII)</p>"
-        html += f"<p><b>Optimized accessible area:</b> {opt:.2f} m² ({opt/floor*100:.1f}% RII)</p>"
-        html += f"<p><b>Total gain:</b> +{gain:.1f} m²</p>"
-        html += "<hr>"
-        html += "<p style='color:#6b7280;font-size:11px'>Improvements ranked by estimated unlock area. "
-        html += "Every suggestion is a <b>relocation</b> — items are moved, never removed. "
-        html += "Strict placement rules (off the robot's path, away from doorways, near peers, "
-        html += "small physical move) are applied first; if no strict slot exists, the rules are "
-        html += "relaxed step by step until a viable spot is found. The Description column flags "
-        html += "any relaxation so you can override the placement on site.</p>"
-        html += "<table border='1' cellpadding='4' cellspacing='0' style='border-collapse:collapse'>"
-        html += "<tr style='background:#f0f4ff'><th>#</th><th>Kind</th><th>Description</th><th>Gain</th><th>Cumulative</th></tr>"
-        _kind_icon = {
-            "relocate_object": "🔄",
-            # remove_object intentionally absent — the optimizer never emits it now.
-            "lower_ramp": "⛰️",
-            "widen_corridor": "↔️",
-            "add_access": "🚪",
+                import numpy as _np
+                if _np.any(_np.asarray(idx) == flat):
+                    picked = cand
+                    break
+            except Exception:
+                continue
+        if picked is None:
+            return False
+        s._mr_drag = {
+            "cand": picked,
+            "anchor_rc": (row, col),
+            "current_rc": (row, col),
+            "indices": list(picked["indices"]),
         }
-        for i, m in enumerate(moves):
-            kind = m.get("kind", "relocate_object" if m.get("to_rc") else "remove_object")
-            icon = _kind_icon.get(kind, "•")
-            description = m.get("description")
-            if not description:
-                description = m["action"]
-                if m.get("to_rc"):
-                    description += f" → ({m['to_rc'][1]*0.05:.1f}, {m['to_rc'][0]*0.05:.1f}) m"
-                description = f"{description} {m.get('name','')}"
-            html += f"<tr><td>{i+1}</td><td>{icon} {kind.replace('_',' ')}</td>"
-            html += f"<td>{description}</td>"
-            html += f"<td>+{m['step_gain']:.2f} m²</td><td>+{m['cumulative_gain']:.2f} m²</td></tr>"
-        html += "</table>"
+        # Build a bbox-sized RGBA QImage from the candidate's cells so MapW
+        # can paint a live ghost outline that follows the cursor without
+        # waiting on the BFS throttle.
+        try:
+            import numpy as _np
+            cells = _np.asarray(picked["indices"], dtype=_np.int64)
+            if cells.size:
+                rows_arr = (cells // w).astype(_np.int64)
+                cols_arr = (cells % w).astype(_np.int64)
+                r0, c0 = int(rows_arr.min()), int(cols_arr.min())
+                r1, c1 = int(rows_arr.max()) + 1, int(cols_arr.max()) + 1
+                gh, gw = r1 - r0, c1 - c0
+                rgba = _np.zeros((gh, gw, 4), dtype=_np.uint8)
+                rgba[rows_arr - r0, cols_arr - c0] = [255, 140, 0, 200]  # orange
+                qi = QImage(rgba.data, gw, gh, 4 * gw, QImage.Format_RGBA8888)
+                qi._np_ref = rgba  # keep underlying buffer alive
+                # Hand the ghost to MapW; offset starts at (0,0).
+                s.mw.begin_drag_ghost(qi, (r0, c0))
+                # Stash the origin so move/release can compute offsets.
+                s._mr_drag["ghost_origin_rc"] = (r0, c0)
+        except Exception as e:  # noqa: BLE001
+            s._log(f"[Manual] ghost build failed: {e}", "warn")
+        s.manual_relocate_status.setText(
+            f"Dragging '{picked.get('name', 'object')}' (id {picked.get('id', '?')}) — release to drop.")
+        return True
 
-        if not moves:
-            html += "<p>No beneficial moves found. The current layout may already be optimal for the given constraints.</p>"
+    def _mr_on_move(s, scene_xy):
+        """Mouse move while dragging — update ghost immediately, schedule
+        a throttled BFS recompute for the heatmap and RII labels."""
+        if not s._mr_active or s._mr_drag is None:
+            return
+        col, row = scene_xy
+        anchor = s._mr_drag["anchor_rc"]
+        dy = row - anchor[0]
+        dx = col - anchor[1]
+        s._mr_drag["current_rc"] = (row, col)
+        # Live ghost: no throttling — follows the cursor at native frame rate.
+        if hasattr(s, "mw") and s.mw is not None:
+            s.mw.update_drag_ghost_offset((dy, dx))
+        # Throttled BFS: at most ~4 Hz heatmap + RII recompute.
+        if s._mr_throttle is None:
+            s._mr_throttle = QTimer(s)
+            s._mr_throttle.setSingleShot(True)
+            s._mr_throttle.timeout.connect(s._mr_throttle_tick)
+        if not s._mr_throttle.isActive():
+            s._mr_throttle.start(250)  # 4 Hz
 
-        te.setHtml(html)
-        win.setCentralWidget(te)
-        win.show()
+    def _mr_throttle_tick(s):
+        """Recompute reachability with the dragged candidate translated."""
+        if not s._mr_active or s._mr_drag is None:
+            return
+        try:
+            s._mr_recompute_preview()
+        except Exception as e:  # noqa: BLE001
+            s._log(f"[Manual] preview failed: {e}", "warn")
 
-    def _bottleneck_failed(s, msg=""):
-        s.bsem_bottleneck.setEnabled(True)
-        s.bottleneck_status.setText(f"Bottleneck analysis failed: {msg}" if msg else "Bottleneck analysis failed — check log.")
+    def _mr_on_release(s, scene_xy):
+        """Mouse release — commit the current preview as the new state."""
+        if not s._mr_active or s._mr_drag is None:
+            return
+        try:
+            s._mr_recompute_preview(commit=True)
+            anchor = s._mr_drag["anchor_rc"]; current = s._mr_drag["current_rc"]
+            dr = current[0] - anchor[0]; dc = current[1] - anchor[1]
+            s._mr_history.append({
+                "cand_id": s._mr_drag["cand"].get("id"),
+                "from_rc": anchor, "to_rc": current,
+                "dr": dr, "dc": dc,
+            })
+            s.manual_relocate_status.setText(
+                f"Move committed (Δrow={dr:+d}, Δcol={dc:+d}). "
+                f"Total moves: {len(s._mr_history)}. Drag another or click Reset.")
+            s._log(f"[Manual] Move committed: Δrow={dr:+d}, Δcol={dc:+d}. "
+                   f"Current RII = {s._mr_current_rii_pct:.1f}%", "success")
+        finally:
+            s._mr_drag = None
+            # Clear the live ghost overlay — the heatmap itself now shows
+            # the committed position.
+            if hasattr(s, "mw") and s.mw is not None:
+                s.mw.clear_drag_ghost()
+
+    def _mr_recompute_preview(s, commit=False):
+        """Apply the dragged candidate's translation to the current blocked
+        mask, re-run BFS, update displayed RII + heatmap. If commit=True the
+        new mask becomes the new baseline-for-this-session (used on release)."""
+        import numpy as _np
+        from core.RII_horizontal import _score_accessibility_from_masks
+        if s._mr_drag is None or s._mr_current_blocked is None:
+            return
+        h = int(s.act_r["h"]); w = int(s.act_r["w"])
+        cand = s._mr_drag["cand"]
+        anchor = s._mr_drag["anchor_rc"]; current = s._mr_drag["current_rc"]
+        dr = current[0] - anchor[0]; dc = current[1] - anchor[1]
+        # Translate the candidate's cells from its base position
+        base_indices = _np.asarray(cand["indices"], dtype=_np.int64)
+        rows = base_indices // w; cols = base_indices % w
+        new_rows = rows + dr; new_cols = cols + dc
+        # Clip new positions to map
+        in_bounds = (new_rows >= 0) & (new_rows < h) & (new_cols >= 0) & (new_cols < w)
+        new_flat = (new_rows[in_bounds] * w + new_cols[in_bounds]).astype(_np.int64)
+        # Build modified blocked mask: clear the old position, set new
+        modified = s._mr_baseline_blocked.copy()
+        modified[base_indices] = 0
+        modified[new_flat] = 1
+        # Rebuild blocked + floor masks for the BFS scoring
+        floor = _np.asarray(s.act_r["floorPx"], dtype=_np.uint8).reshape(h, w)
+        params = s.act_r.get("params", {}) or {}
+        res = float(s.act_r.get("resolution", 0.05))
+        blocked2d = modified.reshape(h, w)
+        # Find a seed cell that's still free
+        seed_yx = None
+        if hasattr(s, "_act_start_world") and s._act_start_world is not None:
+            try:
+                ox, oy = s._mr_baseline_act_r.get("origin", (0.0, 0.0))
+                sx, sy = s._act_start_world
+                col = int(round((sx - float(ox)) / res))
+                row_w = int(round((sy - float(oy)) / res))
+                if 0 <= col < w and 0 <= row_w < h:
+                    seed_yx = (h - 1 - row_w, col)
+            except Exception:
+                seed_yx = None
+        if seed_yx is None:
+            # Default to centre-most free cell
+            free_idx = _np.argwhere(blocked2d == 0)
+            if free_idx.size:
+                centroid = free_idx.mean(axis=0).astype(int)
+                seed_yx = (int(centroid[0]), int(centroid[1]))
+        if seed_yx is None:
+            s._log("[Manual] No free cell to seed reachability — skipping.", "warn")
+            return
+        scored = _score_accessibility_from_masks(
+            blocked2d, floor, params, res, seed_yx=seed_yx,
+        )
+        accessible_cells = int(scored.get("accessibleCells", 0))
+        total_floor_cells = int(scored.get("totalFloorCells", 1))
+        rii_pct = (accessible_cells / max(total_floor_cells, 1)) * 100.0
+        s._mr_current_rii_pct = rii_pct
+        if commit:
+            s._mr_current_blocked = modified
+        s._refresh_manual_rii_display()
+        # Render heatmap from the modified state
+        try:
+            preview_result = dict(s._mr_baseline_act_r)
+            preview_result["blocked"] = modified
+            preview_result["covPx"] = scored.get("accessible2d").ravel()
+            preview_result["reachableCells"] = accessible_cells
+            preview_result["accessibleCells"] = accessible_cells
+            preview_result["coveredArea"] = accessible_cells * res * res
+            preview_result["accessibleArea"] = accessible_cells * res * res
+            bg = getattr(s, "_pgm_pixels", None)
+            qi = render_coverage_fast(preview_result, (0, 229, 160), bg_pgm=bg)
+            s._set_img("Actual Coverage", qi)
+        except Exception as e:  # noqa: BLE001
+            s._log(f"[Manual] render preview failed: {e}", "warn")
+
+    def _render_manual_relocation_view(s, commit_to_act_r=False):
+        """Render the heatmap based on s._mr_current_blocked (no drag preview)."""
+        import numpy as _np
+        from core.RII_horizontal import _score_accessibility_from_masks
+        if s._mr_current_blocked is None or s._mr_baseline_act_r is None:
+            return
+        h = int(s._mr_baseline_act_r["h"]); w = int(s._mr_baseline_act_r["w"])
+        modified2d = s._mr_current_blocked.reshape(h, w)
+        floor = _np.asarray(s._mr_baseline_act_r["floorPx"], dtype=_np.uint8).reshape(h, w)
+        params = s._mr_baseline_act_r.get("params", {}) or {}
+        res = float(s._mr_baseline_act_r.get("resolution", 0.05))
+        free_idx = _np.argwhere(modified2d == 0)
+        if not free_idx.size:
+            return
+        centroid = free_idx.mean(axis=0).astype(int)
+        seed_yx = (int(centroid[0]), int(centroid[1]))
+        scored = _score_accessibility_from_masks(modified2d, floor, params, res, seed_yx=seed_yx)
+        preview_result = dict(s._mr_baseline_act_r)
+        preview_result["blocked"] = s._mr_current_blocked
+        preview_result["covPx"] = scored.get("accessible2d").ravel()
+        bg = getattr(s, "_pgm_pixels", None)
+        qi = render_coverage_fast(preview_result, (0, 229, 160), bg_pgm=bg)
+        s._set_img("Actual Coverage", qi)
 
     def _recompute_semantic_fixations(s):
         if not s.act_r or s._label_grid is None:
@@ -5134,7 +5140,6 @@ class MainWin(QMainWindow):
     def _sem_improved_done(s, token, improved):
         if token != s._sem_session_token:
             return
-        s.bsem_recompute.setEnabled(True)
         if hasattr(s, "bsem_fix_recompute"):
             s.bsem_fix_recompute.setEnabled(True)
         s._sem_improved = improved
@@ -5179,7 +5184,6 @@ class MainWin(QMainWindow):
     def _sem_improved_failed(s, token, msg):
         if token != s._sem_session_token:
             return
-        s.bsem_recompute.setEnabled(True)
         if hasattr(s, "bsem_fix_recompute"):
             s.bsem_fix_recompute.setEnabled(True)
         s._hide_semantic_whatif_card()
